@@ -1,4 +1,16 @@
+"""
+Password Manager Script
+Developed by: Faruk Ahmed
+Version: 1.0.0
+Date: January 2025
 
+Description:
+A comprehensive password manager with encryption, CRUD operations, email integration, and data export features.
+
+Contact:
+GitHub: https://github.com/bornaly
+Email: bornaly@gmail.com
+"""
 
 import tkinter as tk
 import webbrowser
@@ -27,7 +39,6 @@ class SupplementClass:
 
     LOG_DIR = "logs"
     DB_NAME = "password_manager.db"
-    ADMIN_EMAIL = "bornaly@gmail.com"
     ICON_FILE = "safe_icon.ico"
     ICON_FALLBACK_FILE = "safe_icon.png"
     SECRET_KEY = b'16ByteSecretKey!'  # 16-byte key for AES encryption
@@ -187,13 +198,40 @@ class SupplementClass:
         raise ValueError("Admin user not found!")
 
     @classmethod
+    def get_sender_credentials(cls):
+        """
+        Retrieve the sender email credentials from the database.
+        Returns:
+            tuple: (email, decrypted_password) if credentials exist, else (None, None).
+        """
+        try:
+            conn = sqlite3.connect(cls.DB_NAME)
+            cursor = conn.cursor()
+            cursor.execute("SELECT email, encrypted_password FROM sender_credentials LIMIT 1")
+            result = cursor.fetchone()
+            conn.close()
+            if result:
+                email = result[0]
+                decrypted_password = cls.decrypt_data(result[1])  # Decrypt the password
+                return email, decrypted_password
+            else:
+                return None, None
+        except Exception as e:
+            logging.error(f"Failed to retrieve sender credentials: {e}")
+            return None, None
+
+
+    @classmethod
     def send_recovery_email(cls):
-        """Send recovery email with admin credentials."""
+        """
+        Send recovery email with admin credentials.
+        """
         try:
             sender_email, sender_password = cls.get_sender_credentials()
             if not sender_email or not sender_password:
                 messagebox.showerror("Error", "Sender credentials are not set!")
                 return
+
             admin_password = cls.get_admin_password("admin")
             email_body = f"Your admin credentials:\n\nUsername: admin\nPassword: {admin_password}"
             msg = MIMEText(email_body, 'plain', 'utf-8')
@@ -203,7 +241,7 @@ class SupplementClass:
             with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
                 server.login(sender_email, sender_password)
                 server.sendmail(msg["From"], [msg["To"]], msg.as_string())
-            messagebox.showinfo("Success", "Recovery email sent successfully!")
+            messagebox.showinfo("Success", "Recovery email sent successfully!",parent=cls.root) # Centered messagebox
         except Exception as e:
             logging.error(f"Failed to send recovery email: {e}")
             messagebox.showerror("Error", f"Failed to send email: {e}")
@@ -226,21 +264,32 @@ class PasswordManagerGUI:
         self.root.attributes("-topmost", True)
         self.root.attributes("-topmost", False)
 
+
         # Initialize logging, database, and icon
         icon_path = SupplementClass.prepare_icon()
         if icon_path:
             self.root.iconphoto(True, tk.PhotoImage(file=icon_path))
 
-        SupplementClass.init_logging()
-        SupplementClass.init_db()
+
+        SupplementClass.init_logging()  # Initialize logging system
+        logging.info("Password Manager initialized. Developed by Faruk Ahmed.")  # Log initialization
+        SupplementClass.init_db()  # Initialize database
+
 
         # Check for credentials and launch the appropriate windows
         if not self.check_sender_credentials():
             self.setup_sender_email()
+            # Show splash screen first, then main UI
+            self.show_splash_screen()
         elif not self.check_admin_credentials():
+            # Show splash screen first, then main UI
+            self.show_splash_screen()
             self.setup_admin_credentials()
         else:
             self.authenticate_admin()
+            # Show splash screen first, then main UI
+            self.show_splash_screen()
+
 
 
     @staticmethod
@@ -274,7 +323,7 @@ class PasswordManagerGUI:
                 messagebox.showerror("Error", "Both fields are required!")
                 return
             SupplementClass.save_admin_credentials(admin_id, admin_password)
-            messagebox.showinfo("Success", "Admin credentials saved successfully!")
+            messagebox.showinfo("Success", "Admin credentials saved successfully!",parent=self.root) # Centered messagebox
             admin_window.destroy()
             self.authenticate_admin()  # Show Admin Login window after saving credentials
 
@@ -288,11 +337,11 @@ class PasswordManagerGUI:
         admin_window.grab_set()
         admin_window.focus_force()
 
-        tk.Label(admin_window, text="Admin ID:", font=("Helvetica", 12), bg="#d1e7ff").pack(pady=10)
+        tk.Label(admin_window, text="Create New Admin ID:", font=("Helvetica", 12), bg="#d1e7ff").pack(pady=10)
         admin_id_entry = ttk.Entry(admin_window, width=30)
         admin_id_entry.pack(pady=5)
 
-        tk.Label(admin_window, text="Admin Password:", font=("Helvetica", 12), bg="#d1e7ff").pack(pady=10)
+        tk.Label(admin_window, text="Create New Admin Password:", font=("Helvetica", 12), bg="#d1e7ff").pack(pady=10)
         admin_password_entry = ttk.Entry(admin_window, width=30, show="*")
         admin_password_entry.pack(pady=5)
 
@@ -301,33 +350,105 @@ class PasswordManagerGUI:
         admin_window.bind("<Return>", lambda event: save_button.invoke())
         save_button.focus_set()
 
-    import webbrowser
-    from tkinter import messagebox
+    # import webbrowser
+    # from tkinter import messagebox
+
+    def show_splash_screen(self):
+        """
+        Display a splash screen for 15 seconds, centered on the Password Manager window.
+        """
+        logging.info("Password Manager initialized. Developed by Faruk Ahmed.")  # Log initialization
+
+        # Create the splash screen as a Toplevel window
+        splash = tk.Toplevel(self.root)
+        splash.title("Welcome")
+        splash.configure(bg="#d1e7ff")
+        splash.resizable(False, False)
+
+        # Center the splash screen on the main Password Manager window
+        splash_width = 500
+        splash_height = 400
+        root_x = self.root.winfo_x()
+        root_y = self.root.winfo_y()
+        root_width = self.root.winfo_width()
+        root_height = self.root.winfo_height()
+
+        splash_x = root_x + (root_width // 2) - (splash_width // 2)
+        splash_y = root_y + (root_height // 2) - (splash_height // 2)
+        splash.geometry(f"{splash_width}x{splash_height}+{splash_x}+{splash_y}")
+
+        # Attach the splash screen to the main window
+        splash.transient(self.root)
+        splash.grab_set()  # Block interaction with the main window
+
+        # Add content to the splash screen
+        tk.Label(
+            splash,
+            text="Welcome to Password Manager",
+            font=("Helvetica", 16, "bold"),
+            bg="#d1e7ff"
+        ).pack(pady=20)
+
+        tk.Label(
+            splash,
+            text="Developed by Faruk Ahmed\n\nDate: Jan/2025",
+            font=("Helvetica", 12),
+            bg="#d1e7ff"
+        ).pack(pady=10)
+
+        tk.Label(
+            splash,
+            text="GitHub: https://github.com/bornaly\nEmail: bornaly@gmail.com",
+            font=("Helvetica", 10),
+            bg="#d1e7ff",
+            justify="center"
+        ).pack(pady=10)
+
+        # Schedule the splash screen to close after 15 seconds and show the main application
+        self.root.after(5000, lambda: self.transition_to_main_app(splash))
+
+    def transition_to_main_app(self, splash):
+        """
+        Close the splash screen and set up the main application.
+        """
+        splash.destroy()  # Close the splash screen
+        #self.setup_main_ui()  # Set up the main application interface
+        #self.authenticate_admin()
 
     def setup_sender_email(self):
         """
         Set up a window for the user to input sender email credentials.
-        Includes a link to Gmail App Password setup instructions.
+        Includes an additional field for Receiver Email to update ADMIN_EMAIL.
         """
 
         def save_email():
-            """Save the sender email credentials and proceed to setup admin credentials."""
+            """Save the sender and receiver email credentials and proceed."""
             email = email_entry.get().strip()
             password = password_entry.get().strip()
-            if not email or not password:
-                messagebox.showerror("Error", "Both fields are required!")
+            receiver_email = receiver_email_entry.get().strip()
+
+            if not email or not password or not receiver_email:
+                messagebox.showerror("Error", "All fields are required!")
                 return
             try:
-                SupplementClass.save_sender_credentials(email, password)  # Save sender credentials
-                messagebox.showinfo("Success", "Sender email saved successfully!")  # Show success message
-                sender_window.destroy()  # Close the sender email setup window
-                self.setup_admin_credentials()  # Open the Admin Setup window
+                # Save sender credentials
+                SupplementClass.save_sender_credentials(email, password)
+
+                # Update ADMIN_EMAIL with receiver email
+                SupplementClass.ADMIN_EMAIL = receiver_email
+
+                #messagebox.showinfo("Success", "Sender and Receiver emails saved successfully!")
+                messagebox.showinfo("Success", "Sender and Receiver emails saved successfully!",parent=self.root) # Centered messagebox
+                sender_window.destroy()
+                self.setup_admin_credentials()  # Proceed to admin setup
+
+
             except Exception as e:
-                logging.error(f"Failed to save sender email credentials: {e}")
-                messagebox.showerror("Error", f"Failed to save sender email: {e}")
+                logging.error(f"Failed to save credentials: {e}")
+                messagebox.showerror("Error", f"Failed to save credentials: {e}")
 
         def show_gmail_guide():
-            """Display a popup with Gmail App Password setup instructions."""
+            """Show Gmail App Password setup guide."""
             guide_window = tk.Toplevel(self.root)
             guide_window.title("How to Setup Gmail App Password")
             guide_window.geometry("500x300")
@@ -353,41 +474,69 @@ class PasswordManagerGUI:
                 bg="#d1e7ff", cursor="hand2"
             )
             link_label.pack(pady=10)
-
-            # Open the link in a new browser window/tab when clicked
             link_label.bind("<Button-1>", lambda e: webbrowser.open("https://myaccount.google.com/apppasswords", new=1))
 
             ttk.Button(guide_window, text="Close", command=guide_window.destroy).pack(pady=20)
 
-            guide_window.transient(self.root)  # Make it a child of the main window
-            guide_window.grab_set()  # Prevent interactions with the main window
-            guide_window.focus_force()  # Focus on the guide window
+            guide_window.transient(self.root)
+            guide_window.grab_set()
+            guide_window.focus_force()
 
         # Create the sender email setup window
         sender_window = tk.Toplevel(self.root)
         sender_window.title("Setup Sender Email")
         sender_window.configure(bg="#d1e7ff")
-        self.center_window(sender_window, 400, 300)
+        sender_window.resizable(False, False)
 
-        sender_window.transient(self.root)  # Make it a child of the main window
-        sender_window.grab_set()  # Prevent interactions with the main window
-        sender_window.focus_force()  # Focus on the sender email setup window
+        # Center the window relative to Password Manager
+        sender_width = 400
+        sender_height = 400
+        root_x = self.root.winfo_x()
+        root_y = self.root.winfo_y()
+        root_width = self.root.winfo_width()
+        root_height = self.root.winfo_height()
 
+        sender_x = root_x + (root_width // 2) - (sender_width // 2)
+        sender_y = root_y + (root_height // 2) - (sender_height // 2)
+        sender_window.geometry(f"{sender_width}x{sender_height}+{sender_x}+{sender_y}")
+
+        sender_window.transient(self.root)
+        sender_window.grab_set()
+        sender_window.focus_force()
+
+        # Sender Email Field
         tk.Label(sender_window, text="Sender Email:", font=("Helvetica", 12), bg="#d1e7ff").pack(pady=10)
         email_entry = ttk.Entry(sender_window, width=30)
         email_entry.pack(pady=5)
 
-        tk.Label(sender_window, text="Gmail App Password:", font=("Helvetica", 12), bg="#d1e7ff").pack(pady=10)
+        # Gmail App Password Field
+        tk.Label(sender_window, text="** Gmail App Password:", font=("Helvetica", 12), bg="#d1e7ff").pack(pady=10)
         password_entry = ttk.Entry(sender_window, width=30, show="*")
         password_entry.pack(pady=5)
 
+        # Sample Password Example
+        tk.Label(
+            sender_window,
+            text="* Example: qwer trew rtyu qsde",
+            font=("Helvetica", 10, "italic"),
+            fg="gray",
+            bg="#d1e7ff",
+        ).pack(pady=5)
+
+        # Receiver Email Field
+        tk.Label(sender_window, text="Receiver Email:", font=("Helvetica", 12), bg="#d1e7ff").pack(pady=10)
+        receiver_email_entry = ttk.Entry(sender_window, width=30)
+        receiver_email_entry.pack(pady=5)
+
+        # Gmail Setup Guide Link
         link_label = tk.Label(
-            sender_window, text="How to setup Gmail App password?", font=("Helvetica", 12, "underline"), fg="blue",
+            sender_window, text="** How to setup Gmail App password?", font=("Helvetica", 12, "underline"), fg="blue",
             bg="#d1e7ff", cursor="hand2"
         )
         link_label.pack(pady=5)
         link_label.bind("<Button-1>", lambda e: show_gmail_guide())
 
+        # Save Button
         save_button = ttk.Button(sender_window, text="Save Email", command=save_email)
         save_button.pack(pady=20)
         sender_window.bind("<Return>", lambda event: save_button.invoke())
@@ -416,8 +565,9 @@ class PasswordManagerGUI:
                 conn.close()
 
                 if result and SupplementClass.decrypt_data(result[0]) == admin_password:
-                    messagebox.showinfo("Success", "Admin authenticated successfully!")
+                    messagebox.showinfo("Success", "Admin authenticated successfully!",parent=self.root)  # Centered messagebox
                     login_window.destroy()
+
 
                     # Bring the Password Manager window to the top
                     self.root.lift()
@@ -447,12 +597,12 @@ class PasswordManagerGUI:
         self.center_window(login_window, width=400, height=250)
 
         # Admin ID Entry
-        tk.Label(login_window, text="Admin ID:", font=("Helvetica", 12), bg="#d1e7ff").pack(pady=10)
+        tk.Label(login_window, text="Logon as Admin ID:", font=("Helvetica", 12), bg="#d1e7ff").pack(pady=10)
         admin_id_entry = ttk.Entry(login_window, width=30)
         admin_id_entry.pack(pady=5)
 
         # Admin Password Entry
-        tk.Label(login_window, text="Admin Password:", font=("Helvetica", 12), bg="#d1e7ff").pack(pady=10)
+        tk.Label(login_window, text="Logon as Admin Password:", font=("Helvetica", 12), bg="#d1e7ff").pack(pady=10)
         admin_password_entry = ttk.Entry(login_window, width=30, show="*")
         admin_password_entry.pack(pady=5)
 
@@ -496,7 +646,7 @@ class PasswordManagerGUI:
 
             title_label = tk.Label(
                 title_frame,
-                text="Password Manager",
+                text="Faruk Ahmed's Password Manager",
                 font=("Helvetica", 18, "bold"),
                 bg="#4682B4",
                 fg="white"
@@ -1388,7 +1538,7 @@ class PasswordManagerGUI:
                 self.refresh_table()
 
                 # Notify the user
-                messagebox.showinfo("Success", "Password saved successfully!")
+                messagebox.showinfo("Success", "Password saved successfully!", parent=self.root)  # Centered messagebox
             except Exception as e:
                 logging.error(f"Failed to save password: {e}")
                 messagebox.showerror("Error", f"Failed to save password: {e}")
@@ -1513,8 +1663,14 @@ class PasswordManagerGUI:
 
         # Set up Treeview columns
         for col in table_columns:
-            self.table.heading(col, text=col)
-            self.table.column(col, width=200, anchor="center")
+            self.table.heading(col, text=col, anchor="center")  # Center the header
+            self.table.column(col, width=200, anchor="center")  # Align both header and data to the center
+
+
+        # # Set up Treeview columns
+        # for col in table_columns:
+        #     self.table.heading(col, text=col)
+        #     self.table.column(col, width=200, anchor="center")
 
         # Bind events for multiple row selection
         def on_select_rows(event):
@@ -1606,7 +1762,7 @@ class PasswordManagerGUI:
                     conn.commit()
 
                 conn.close()
-                messagebox.showinfo("Success", "Admin password updated successfully!")
+                messagebox.showinfo("Success", "Admin password updated successfully!",parent=self.root) # Centered messagebox
                 reset_window.destroy()
             except Exception as e:
                 logging.error(f"Error updating admin password: {e}")
@@ -1652,7 +1808,7 @@ class PasswordManagerGUI:
                 conn.commit()
                 conn.close()
 
-                messagebox.showinfo("Success", "Sender email credentials updated successfully!")
+                messagebox.showinfo("Success", "Sender email credentials updated successfully!",parent=self.root) # Centered messagebox
                 reset_window.destroy()
             except Exception as e:
                 logging.error(f"Failed to reset sender credentials: {e}")
@@ -1669,7 +1825,7 @@ class PasswordManagerGUI:
         email_entry = ttk.Entry(reset_window, width=30)
         email_entry.pack(pady=5)
 
-        tk.Label(reset_window, text="New Gmail App/Zoho Password:", font=("Helvetica", 12), bg="#d1e7ff").pack(pady=10)
+        tk.Label(reset_window, text="*New Gmail App/Zoho Password:", font=("Helvetica", 12), bg="#d1e7ff").pack(pady=10)
         password_entry = ttk.Entry(reset_window, width=30, show="*")
         password_entry.pack(pady=5)
 
@@ -1977,3 +2133,5 @@ if __name__ == "__main__":
 
     # Start the Tkinter main loop
     root.mainloop()
+
+
