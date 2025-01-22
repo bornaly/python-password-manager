@@ -328,7 +328,7 @@ class PasswordManagerGUI:
 
     def __init__(self, root):
         self.root = root
-        self.root.title("Password Manager")
+        self.root.title("Password Manager 2.0")
         self.root.geometry("900x775")  # Set the window size
         self.center_window(self.root)  # Center the window
         self.root.configure(bg="#e6f7ff")
@@ -479,7 +479,7 @@ class PasswordManagerGUI:
         ).pack(pady=10)
 
         # Schedule the splash screen to close after 15 seconds and show the main application
-        self.root.after(3000, lambda: self.transition_to_main_app(splash))
+        self.root.after(2000, lambda: self.transition_to_main_app(splash))
 
     def transition_to_main_app(self, splash):
         """
@@ -718,7 +718,7 @@ class PasswordManagerGUI:
 
             title_label = tk.Label(
                 title_frame,
-                text="Faruk Ahmed's Password Manager",
+                text="My Password Manager",
                 font=("Helvetica", 18, "bold"),
                 bg="#4682B4",
                 fg="white"
@@ -1401,23 +1401,24 @@ class PasswordManagerGUI:
     def edit_selected(self):
         """
         Open a new window to edit the selected record from the grid.
-        Allows modification of the password and target name fields.
+        Allows modification of the account ID, password, and target name fields.
+        Includes a Cancel button with confirmation.
         """
         selected_items = self.table.selection()
         if len(selected_items) != 1:
             messagebox.showerror("Error", "Please select exactly one row to edit!")
             return
 
-        selected_item = selected_items[0]
+        selected_item = self.table.selection()[0]
         values = self.table.item(selected_item, "values")
-        account_id, hashed_password, target_name = values
+        old_account_id, hashed_password, target_name = values
 
         # Fetch original password from the database
         conn = sqlite3.connect(SupplementClass.DB_NAME)
         cursor = conn.cursor()
         cursor.execute(
             "SELECT original_password FROM passwords WHERE account_id = ? AND target_name = ?",
-            (account_id, target_name),
+            (old_account_id, target_name),
         )
         result = cursor.fetchone()
         conn.close()
@@ -1438,8 +1439,7 @@ class PasswordManagerGUI:
         # Populate fields
         tk.Label(edit_window, text="Account ID:", font=("Helvetica", 12), bg="#e6f7ff").pack(pady=10)
         account_id_entry = ttk.Entry(edit_window, width=30)
-        account_id_entry.insert(0, account_id)
-        #account_id_entry.configure(state="disabled")  # Disable editing Account ID
+        account_id_entry.insert(0, old_account_id)
         account_id_entry.pack(pady=5)
 
         tk.Label(edit_window, text="Password:", font=("Helvetica", 12), bg="#e6f7ff").pack(pady=10)
@@ -1456,17 +1456,27 @@ class PasswordManagerGUI:
             """
             Save changes made in the edit window to the database and refresh the table.
             """
+            new_account_id = account_id_entry.get().strip()
             new_password = password_entry.get().strip()
             new_target_name = target_entry.get().strip()
 
-            if not new_password or not new_target_name:
+            if not new_account_id or not new_password or not new_target_name:
                 messagebox.showerror("Error", "All fields are required!")
                 return
 
             try:
-                # Update the record in the database
                 conn = sqlite3.connect(SupplementClass.DB_NAME)
                 cursor = conn.cursor()
+
+                # Check for duplicate Account ID and Target Name combination
+                if new_account_id != old_account_id or new_target_name != target_name:
+                    cursor.execute(
+                        "SELECT COUNT(*) FROM passwords WHERE account_id = ? AND target_name = ?",
+                        (new_account_id, new_target_name),
+                    )
+                    if cursor.fetchone()[0] > 0:
+                        messagebox.showerror("Error", "The new Account ID and Target Name combination already exists!")
+                        return
 
                 # Hash the new password
                 hashed_password = bcrypt.hashpw(new_password.encode(), bcrypt.gensalt()).decode()
@@ -1475,12 +1485,13 @@ class PasswordManagerGUI:
                 cursor.execute(
                     """
                     UPDATE passwords 
-                    SET original_password = ?, 
+                    SET account_id = ?, 
+                        original_password = ?, 
                         hashed_password = ?, 
                         target_name = ?
                     WHERE account_id = ?
                     """,
-                    (new_password, hashed_password, new_target_name, account_id),
+                    (new_account_id, new_password, hashed_password, new_target_name, old_account_id),
                 )
 
                 conn.commit()
@@ -1490,17 +1501,31 @@ class PasswordManagerGUI:
                 self.refresh_table()
 
                 # Notify the user and close the edit window
-                messagebox.showinfo("Success", f"Record updated successfully for Account ID: {account_id}.")
+                messagebox.showinfo("Success", f"Record updated successfully for Account ID: {new_account_id}.")
                 edit_window.destroy()
 
             except Exception as e:
                 logging.error(f"Error saving changes: {e}")
                 messagebox.showerror("Error", "Failed to save changes!")
 
-        # Add Save Button
-        save_button = ttk.Button(edit_window, text="Save", command=save_changes)
-        save_button.pack(pady=20)
-        self.refresh_table()  # Refresh the grid after closing the summary window
+        def cancel_changes():
+            """
+            Confirm and close the edit window without saving changes.
+            """
+            # if messagebox.askyesno("Confirm Cancel", "Are you sure you want to discard changes?"):
+            #     edit_window.destroy()
+            edit_window.destroy()
+
+        # Add Save and Cancel buttons
+        button_frame = tk.Frame(edit_window, bg="#e6f7ff")
+        button_frame.pack(pady=20)
+
+        save_button = ttk.Button(button_frame, text="Save", command=save_changes)
+        save_button.grid(row=0, column=0, padx=10)
+
+        cancel_button = ttk.Button(button_frame, text="Cancel", command=cancel_changes)
+        cancel_button.grid(row=0, column=1, padx=10)
+
 
     def delete_selected(self):
         """
@@ -1557,15 +1582,42 @@ class PasswordManagerGUI:
             logging.error(f"Failed to delete records: {e}")
             messagebox.showerror("Error", f"Failed to delete records: {e}")
 
+    def copy_selected(self):
+        """
+        Copy selected rows from the table to the system clipboard.
+        """
+        selected_items = self.table.selection()
+
+        if not selected_items:
+            messagebox.showerror("Error", "No rows selected to copy!")
+            return
+
+        try:
+            # Collect data from selected rows
+            rows = []
+            for item in selected_items:
+                row = self.table.item(item, "values")
+                rows.append("\t".join(row))  # Tab-separated for better formatting
+
+            # Copy data to clipboard
+            self.root.clipboard_clear()
+            self.root.clipboard_append("\n".join(rows))
+            self.root.update()  # Update the clipboard
+            messagebox.showinfo("Success", "Selected rows copied to clipboard!")
+        except Exception as e:
+            logging.error(f"Failed to copy selected rows: {e}")
+            messagebox.showerror("Error", "Failed to copy rows. Check logs for details.")
+
     def setup_password_crud(self):
         """
         Set up CRUD functionality for managing passwords with a colorful data grid.
-        Includes vertical and horizontal scrollbars for the grid, a search field, and a footer with the total record count.
+        Includes vertical and horizontal scrollbars, a search field,
+        and right-click or Ctrl+C to copy rows, with support for mouse drag selection.
         """
 
         def save_password():
             """
-            Save the entered password details into the database and refresh the table to show the new row at the top.
+            Save the entered password details into the database and refresh the table.
             """
             account_id = self.account_id_entry.get().strip()
             password = self.password_entry.get().strip()
@@ -1610,11 +1662,10 @@ class PasswordManagerGUI:
                 self.refresh_table()
 
                 # Notify the user
-                messagebox.showinfo("Success", "Password saved successfully!", parent=self.root)  # Centered messagebox
+                messagebox.showinfo("Success", "Password saved successfully!", parent=self.root)
             except Exception as e:
                 logging.error(f"Failed to save password: {e}")
                 messagebox.showerror("Error", f"Failed to save password: {e}")
-
 
         def filter_table(event):
             """
@@ -1644,19 +1695,16 @@ class PasswordManagerGUI:
         input_frame = tk.Frame(self.root, bg="#e6f7ff")
         input_frame.pack(pady=10)
 
-        # Account ID Field
         tk.Label(input_frame, text="Account ID:", font=("Helvetica", 12), bg="#e6f7ff").grid(row=0, column=0, padx=15,
                                                                                              pady=10)
         self.account_id_entry = ttk.Entry(input_frame, width=30)
         self.account_id_entry.grid(row=0, column=1, padx=15, pady=10)
 
-        # Password Field
         tk.Label(input_frame, text="Password:", font=("Helvetica", 12), bg="#e6f7ff").grid(row=1, column=0, padx=15,
                                                                                            pady=10)
         self.password_entry = ttk.Entry(input_frame, width=30, show="*")
         self.password_entry.grid(row=1, column=1, padx=15, pady=10)
 
-        # Target Name Field
         tk.Label(input_frame, text="Target Name:", font=("Helvetica", 12), bg="#e6f7ff").grid(row=2, column=0, padx=15,
                                                                                               pady=10)
         self.target_entry = ttk.Entry(input_frame, width=30)
@@ -1674,20 +1722,9 @@ class PasswordManagerGUI:
                                     bg="#2196F3", fg="white", font=("Helvetica", 12, "bold"))
         retrieve_button.grid(row=0, column=1, padx=10, pady=5)
 
-        # delete_button = tk.Button(button_frame, text="Delete Selected", command=delete_selected, bg="#F44336",
-        #                           fg="white", font=("Helvetica", 12, "bold"))
-        # delete_button.grid(row=0, column=2, padx=10, pady=5)
-
-        delete_button = tk.Button(
-            button_frame,
-            text="Delete Selected",
-            command=self.delete_selected,  # Use the updated method here
-            bg="#F44336",
-            fg="white",
-            font=("Helvetica", 12, "bold")
-        )
+        delete_button = tk.Button(button_frame, text="Delete Selected", command=self.delete_selected,
+                                  bg="#F44336", fg="white", font=("Helvetica", 12, "bold"))
         delete_button.grid(row=0, column=2, padx=10, pady=5)
-
 
         edit_button = tk.Button(button_frame, text="Edit Selected", command=self.edit_selected, bg="#FF9800",
                                 fg="white", font=("Helvetica", 12, "bold"))
@@ -1724,7 +1761,7 @@ class PasswordManagerGUI:
             height=10,
             yscrollcommand=v_scrollbar.set,
             xscrollcommand=h_scrollbar.set,
-            selectmode="extended",  # Enable extended selection for multiple rows
+            selectmode="extended",  # Allow multiple selection
         )
         v_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         h_scrollbar.pack(side=tk.BOTTOM, fill=tk.X)
@@ -1733,41 +1770,70 @@ class PasswordManagerGUI:
         v_scrollbar.config(command=self.table.yview)
         h_scrollbar.config(command=self.table.xview)
 
-        # Set up Treeview columns
         for col in table_columns:
-            self.table.heading(col, text=col, anchor="center")  # Center the header
-            self.table.column(col, width=200, anchor="center")  # Align both header and data to the center
+            self.table.heading(col, text=col, anchor="center")
+            self.table.column(col, width=200, anchor="center")
 
-
-        # # Set up Treeview columns
-        # for col in table_columns:
-        #     self.table.heading(col, text=col)
-        #     self.table.column(col, width=200, anchor="center")
-
-        # Bind events for multiple row selection
-        def on_select_rows(event):
-            """Handle mouse drag for row selection."""
+        # Right-click context menu
+        def show_context_menu(event):
+            """
+            Show the context menu on right-click.
+            """
             row_id = self.table.identify_row(event.y)
             if row_id:
-                self.table.selection_add(row_id)
+                self.table.selection_add(row_id)  # Ensure clicked row is added to selection
+            context_menu.post(event.x_root, event.y_root)
 
-        self.table.bind("<B1-Motion>", on_select_rows)  # Bind mouse drag to row selection
+        # Copy selected rows to clipboard
+        def copy_selected(event=None):
+            """
+            Copy selected rows from the table to the system clipboard.
+            """
+            selected_items = self.table.selection()
+            if not selected_items:
+                messagebox.showerror("Error", "No rows selected to copy!")
+                return
+
+            try:
+                # Collect data from selected rows
+                rows = ["\t".join(self.table.item(item, "values")) for item in selected_items]
+                self.root.clipboard_clear()
+                self.root.clipboard_append("\n".join(rows))
+                self.root.update()  # Update the clipboard
+                #messagebox.showinfo("Success", "Selected rows copied to clipboard!")
+            except Exception as e:
+                logging.error(f"Failed to copy selected rows: {e}")
+                messagebox.showerror("Error", "Failed to copy rows. Check logs for details.")
+
+        # Handle drag selection
+        def drag_select(event):
+            """
+            Select rows while dragging the mouse.
+            """
+            row_id = self.table.identify_row(event.y)
+            if row_id:
+                self.table.selection_add(row_id)  # Add the row to the current selection
+
+        # Context menu
+        context_menu = tk.Menu(self.root, tearoff=0)
+        context_menu.add_command(label="Copy", command=copy_selected)
+
+        # Bind right-click, Ctrl+C, and mouse drag
+        self.table.bind("<Button-3>", show_context_menu)  # Right-click
+        self.root.bind("<Control-c>", copy_selected)  # Ctrl+C
+        self.table.bind("<B1-Motion>", drag_select)  # Mouse drag
 
         # Footer
-        footer_frame = tk.Frame(self.root, bg="#e6f7ff", bd=0, highlightthickness=0)
+        footer_frame = tk.Frame(self.root, bg="#e6f7ff")
         footer_frame.pack(fill=tk.X, side=tk.BOTTOM)
 
         self.total_records_label = tk.Label(
-            footer_frame,
-            text="Total Records: 0",
-            font=("Helvetica", 12),
-            bg="#e6f7ff",
-            anchor="center",
+            footer_frame, text="Total Records: 0", font=("Helvetica", 12), bg="#e6f7ff", anchor="center"
         )
         self.total_records_label.pack(pady=6)
 
-        # Initial table refresh
         self.refresh_table()
+
 
     def setup_menus(self):
         """
@@ -1996,196 +2062,225 @@ class PasswordManagerGUI:
         window.lift()
 
     def show_about_window(self):
-        """Show the About window with application details and a scroll bar."""
+        """
+        Show the About window with application details and allow text selection, copying, and closing.
+        """
+        # Create a new top-level window
         about_window = tk.Toplevel(self.root)
         about_window.title("About Password Manager")
-        about_window.geometry("400x500")
+        about_window.geometry("600x500")
         about_window.configure(bg="#e6f7ff")
 
-        # Center the window relative to the Password Manager window
-        self.center_window(about_window, width=600, height=300)
+        # Center the window relative to the main application
+        self.center_window(about_window, width=600, height=500)
 
-        # Main frame for scrolling
-        main_frame = tk.Frame(about_window, bg="#e6f7ff")
-        main_frame.pack(fill=tk.BOTH, expand=True)
+        # Create a Frame for the Text widget and Scrollbar
+        frame = tk.Frame(about_window, bg="#e6f7ff")
+        frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-        # Canvas for scrolling
-        canvas = tk.Canvas(main_frame, bg="#e6f7ff", highlightthickness=0)
-        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-        # Scrollbar for the canvas
-        scrollbar = ttk.Scrollbar(main_frame, orient="vertical", command=canvas.yview)
+        # Create a Scrollbar
+        scrollbar = ttk.Scrollbar(frame, orient=tk.VERTICAL)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
-        # Configure the canvas with the scrollbar
-        canvas.configure(yscrollcommand=scrollbar.set)
-        canvas.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        # Create a Text widget for displaying content
+        text_widget = tk.Text(
+            frame,
+            wrap=tk.WORD,
+            bg="#f8f8f8",
+            fg="black",
+            font=("Helvetica", 12),
+            yscrollcommand=scrollbar.set,
+        )
+        text_widget.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        # Bind mouse scrolling to the canvas
-        def on_mouse_scroll(event):
-            """Scroll the canvas when the mouse wheel is used."""
-            canvas.yview_scroll(-1 * int(event.delta / 120), "units")
+        # Link the Scrollbar to the Text widget
+        scrollbar.config(command=text_widget.yview)
 
-        canvas.bind_all("<MouseWheel>", on_mouse_scroll)
+        # Add content to the Text widget
+        content = """\
+    Password Manager v2.0
 
-        # Inner frame for the content
-        inner_frame = tk.Frame(canvas, bg="#e6f7ff")
-        canvas.create_window((0, 0), window=inner_frame, anchor="nw")
+    Developed by: Faruk Ahmed
+    Version: 2.0.0
+    Date: January 2025
 
-        # Add content to the inner frame
-        tk.Label(
-            inner_frame,
-            text="Password Manager v2.0",
-            font=("Helvetica", 16, "bold"),
-            bg="#e6f7ff"
-        ).pack(pady=10)
+    Description:
+    A comprehensive password manager with encryption, CRUD operations, email integration, and data export features.
 
-        # Bullet points
+    Key Features:
+    """
+        # Append bullet points to the content
         bullet_points = [
-            ("1. Enhanced Security:", "All passwords are encrypted using AES-256."),
-            ("2. User-Friendly Interface:", "Intuitive design for easy navigation."),
-            ("3. Search Functionality:", "Quickly find stored passwords."),
-            ("4. Data Export:", "Export passwords to a password-protected Excel file."),
-            ("5. Conflict Resolution:", "Easily resolve conflicts during data imports."),
-            ("6. Dynamic Data Grid:", "Colorful, scrollable grid with alternating row colors."),
-            ("7. CRUD Operations:", "Create, Read, Update, and Delete password records."),
-            ("8. Real-Time Sync:", "Refresh the grid instantly after any update."),
-            ("9. Duplicate Prevention:", "Detects and prevents duplicate records."),
-            ("10. Password Retrieval:", "Quickly retrieve and display original passwords."),
-            ("11. Admin Management:", "Supports admin credential management with encryption."),
-            ("12. Log Management:", "Keeps track of logs and removes outdated log files."),
-            ("13. Multi-Format Import:", "Import data from various file formats like CSV and Excel."),
-            ("14. Summary Reports:", "Displays a clear summary of updates and denied records."),
-            ("15. Cross-Platform Compatibility:", "Works on Windows, macOS, and Linux."),
-            ("16. Customizable Appearance:", "Easily adjust themes and colors for the interface."),
-            ("17. Error Handling:", "Robust error handling and user-friendly error messages."),
-            ("18. Search with Filters:", "Advanced search with filters for Account ID and Target Name."),
-            ("19. Password Strength Validation:", "Ensures strong passwords during creation."),
-            ("20. One-Click Backup:", "Backup your database with a single click."),
+            "1. Enhanced Security: All passwords are encrypted using AES-256.",
+            "2. User-Friendly Interface: Intuitive design for easy navigation.",
+            "3. Search Functionality: Quickly find stored passwords.",
+            "4. Data Export: Export passwords to a password-protected Excel file.",
+            "5. Conflict Resolution: Easily resolve conflicts during data imports.",
+            "6. Dynamic Data Grid: Colorful, scrollable grid with alternating row colors.",
+            "7. CRUD Operations: Create, Read, Update, and Delete password records.",
+            "8. Real-Time Sync: Refresh the grid instantly after any update.",
+            "9. Duplicate Prevention: Detects and prevents duplicate records.",
+            "10. Password Retrieval: Quickly retrieve and display original passwords.",
+            "11. Admin Management: Supports admin credential management with encryption.",
+            "12. Log Management: Keeps track of logs and removes outdated log files.",
+            "13. Multi-Format Import: Import data from various file formats like CSV and Excel.",
+            "14. Summary Reports: Displays a clear summary of updates and denied records.",
+            "15. Cross-Platform Compatibility: Works on Windows, macOS, and Linux.",
+            "16. Customizable Appearance: Easily adjust themes and colors for the interface.",
+            "17. Error Handling: Robust error handling and user-friendly error messages.",
+            "18. Search with Filters: Advanced search with filters for Account ID and Target Name.",
+            "19. Password Strength Validation: Ensures strong passwords during creation.",
+            "20. One-Click Backup: Backup your database with a single click.",
         ]
 
-        for title, description in bullet_points:
-            tk.Label(
-                inner_frame,
-                text=f"• {title} {description}",
-                font=("Helvetica", 10),
-                bg="#e6f7ff",
-                justify="left",
-                wraplength=550
-            ).pack(anchor="w", padx=20, pady=5)
+        # Insert content and bullet points into the Text widget
+        text_widget.insert(tk.END, content + "\n")
+        for point in bullet_points:
+            text_widget.insert(tk.END, f"• {point}\n")
 
-        # Close button
-        ttk.Button(inner_frame, text="Close", command=about_window.destroy).pack(pady=20, anchor="center")
+        # Make the Text widget read-only
+        text_widget.config(state=tk.DISABLED)
+
+        # Add right-click context menu for copying text
+        def copy_selected_text(event=None):
+            """Copy selected text to the clipboard."""
+            try:
+                selected_text = text_widget.selection_get()
+                about_window.clipboard_clear()
+                about_window.clipboard_append(selected_text)
+                about_window.update()  # Update clipboard
+            except tk.TclError:
+                messagebox.showinfo("Info", "No text selected to copy!")
+
+        # Add a context menu for copying
+        context_menu = tk.Menu(about_window, tearoff=0)
+        context_menu.add_command(label="Copy", command=copy_selected_text)
+
+        # Show context menu on right-click
+        def show_context_menu(event):
+            context_menu.post(event.x_root, event.y_root)
+
+        text_widget.bind("<Button-3>", show_context_menu)  # Right-click for context menu
+
+        # Add a Close button
+        close_button = ttk.Button(
+            about_window,
+            text="Close",
+            command=about_window.destroy,  # Close the About window
+        )
+        close_button.pack(pady=10)
 
         # Make the window modal
         about_window.transient(self.root)
         about_window.grab_set()
         about_window.focus_force()
-def show_about_window(self):
-    """Show the About window with application details and a scroll bar."""
-    about_window = tk.Toplevel(self.root)
-    about_window.title("About Password Manager")
-    about_window.geometry("400x500")
-    about_window.configure(bg="#e6f7ff")
 
-    # Center the window relative to the Password Manager window
-    self.center_window(about_window, width=600, height=300)
 
-    # Main frame for scrolling
-    main_frame = tk.Frame(about_window, bg="#e6f7ff")
-    main_frame.pack(fill=tk.BOTH, expand=True)
-
-    # Canvas for scrolling
-    canvas = tk.Canvas(main_frame, bg="#e6f7ff", highlightthickness=0)
-    canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-    # Scrollbar for the canvas
-    scrollbar = ttk.Scrollbar(main_frame, orient="vertical", command=canvas.yview)
-    scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-
-    # Configure the canvas with the scrollbar
-    canvas.configure(yscrollcommand=scrollbar.set)
-    canvas.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-
-    # Bind mouse scrolling to the canvas
-    def on_mouse_scroll(event):
-        """Scroll the canvas when the mouse wheel is used."""
-        canvas.yview_scroll(-1 * int(event.delta / 120), "units")
-
-    canvas.bind_all("<MouseWheel>", on_mouse_scroll)
-
-    # Inner frame for the content
-    inner_frame = tk.Frame(canvas, bg="#e6f7ff")
-    canvas.create_window((0, 0), window=inner_frame, anchor="nw")
-
-    # Add content to the inner frame
-    tk.Label(
-        inner_frame,
-        text="Password Manager v2.0",
-        font=("Helvetica", 16, "bold"),
-        bg="#e6f7ff"
-    ).pack(pady=10)
-
-    # Numbered points
-    numbered_points = [
-        ("Enhanced Security:", "All passwords are encrypted using AES-256."),
-        ("User-Friendly Interface:", "Intuitive design for easy navigation."),
-        ("Search Functionality:", "Quickly find stored passwords."),
-        ("Data Export:", "Export passwords to a password-protected Excel file."),
-        ("Conflict Resolution:", "Easily resolve conflicts during data imports."),
-        ("Dynamic Data Grid:", "Colorful, scrollable grid with alternating row colors."),
-        ("CRUD Operations:", "Create, Read, Update, and Delete password records."),
-        ("Real-Time Sync:", "Refresh the grid instantly after any update."),
-        ("Duplicate Prevention:", "Detects and prevents duplicate records."),
-        ("Password Retrieval:", "Quickly retrieve and display original passwords."),
-        ("Admin Management:", "Supports admin credential management with encryption."),
-        ("Log Management:", "Keeps track of logs and removes outdated log files."),
-        ("Multi-Format Import:", "Import data from various file formats like CSV and Excel."),
-        ("Summary Reports:", "Displays a clear summary of updates and denied records."),
-        ("Cross-Platform Compatibility:", "Works on Windows, macOS, and Linux."),
-        ("Customizable Appearance:", "Easily adjust themes and colors for the interface."),
-        ("Error Handling:", "Robust error handling and user-friendly error messages."),
-        ("Search with Filters:", "Advanced search with filters for Account ID and Target Name."),
-        ("Password Strength Validation:", "Ensures strong passwords during creation."),
-        ("One-Click Backup:", "Backup your database with a single click."),
-    ]
-
-    # Fonts for styling
-    bold_font = ("Arial", 12, "bold")  # Bold and larger font for titles
-    normal_font = ("Arial", 10)  # Normal font for descriptions
-
-    # Add numbered points to the inner_frame
-    for i, (title, description) in enumerate(numbered_points, start=1):
-        # Create a text widget for each point
-        text_widget = tk.Text(inner_frame, wrap="word", bg="#e6f7ff", borderwidth=0, highlightthickness=0, height=2)
-        text_widget.pack(fill="x", padx=20, pady=5)
-
-        # Configure font tags
-        text_widget.tag_configure("bold", font=bold_font)  # Configure bold font
-        text_widget.tag_configure("normal", font=normal_font)  # Configure normal font
-
-        # Insert the number and bold title
-        text_widget.insert("end", f"{i}. ", "bold")  # Number in bold
-        text_widget.insert("end", title, "bold")  # Title in bold font
-
-        # Insert the description in normal font
-        text_widget.insert("end", f" {description}", "normal")
-
-        # Prevent user edits while allowing selection
-        def disable_edit(event):
-            return "break"  # Prevent editing actions
-
-        text_widget.bind("<Key>", disable_edit)  # Block key presses
-        text_widget.bind("<BackSpace>", disable_edit)  # Block backspace
-        text_widget.bind("<Delete>", disable_edit)  # Block delete
-
-    # Close button
-    ttk.Button(inner_frame, text="Close", command=about_window.destroy).pack(pady=20, anchor="center")
-
-    # Make the window modal
-    about_window.transient(self.root)
-    about_window.grab_set()
-    about_window.focus_force()
+# def show_about_window(self):
+#     """Show the About window with application details and a scroll bar."""
+#     about_window = tk.Toplevel(self.root)
+#     about_window.title("About Password Manager")
+#     about_window.geometry("400x500")
+#     about_window.configure(bg="#e6f7ff")
+#
+#     # Center the window relative to the Password Manager window
+#     self.center_window(about_window, width=600, height=300)
+#
+#     # Main frame for scrolling
+#     main_frame = tk.Frame(about_window, bg="#e6f7ff")
+#     main_frame.pack(fill=tk.BOTH, expand=True)
+#
+#     # Canvas for scrolling
+#     canvas = tk.Canvas(main_frame, bg="#e6f7ff", highlightthickness=0)
+#     canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+#
+#     # Scrollbar for the canvas
+#     scrollbar = ttk.Scrollbar(main_frame, orient="vertical", command=canvas.yview)
+#     scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+#
+#     # Configure the canvas with the scrollbar
+#     canvas.configure(yscrollcommand=scrollbar.set)
+#     canvas.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+#
+#     # Bind mouse scrolling to the canvas
+#     def on_mouse_scroll(event):
+#         """Scroll the canvas when the mouse wheel is used."""
+#         canvas.yview_scroll(-1 * int(event.delta / 120), "units")
+#
+#     canvas.bind_all("<MouseWheel>", on_mouse_scroll)
+#
+#     # Inner frame for the content
+#     inner_frame = tk.Frame(canvas, bg="#e6f7ff")
+#     canvas.create_window((0, 0), window=inner_frame, anchor="nw")
+#
+#     # Add content to the inner frame
+#     tk.Label(
+#         inner_frame,
+#         text="Password Manager v2.0",
+#         font=("Helvetica", 16, "bold"),
+#         bg="#e6f7ff"
+#     ).pack(pady=10)
+#
+#     # Numbered points
+#     numbered_points = [
+#         ("Enhanced Security:", "All passwords are encrypted using AES-256."),
+#         ("User-Friendly Interface:", "Intuitive design for easy navigation."),
+#         ("Search Functionality:", "Quickly find stored passwords."),
+#         ("Data Export:", "Export passwords to a password-protected Excel file."),
+#         ("Conflict Resolution:", "Easily resolve conflicts during data imports."),
+#         ("Dynamic Data Grid:", "Colorful, scrollable grid with alternating row colors."),
+#         ("CRUD Operations:", "Create, Read, Update, and Delete password records."),
+#         ("Real-Time Sync:", "Refresh the grid instantly after any update."),
+#         ("Duplicate Prevention:", "Detects and prevents duplicate records."),
+#         ("Password Retrieval:", "Quickly retrieve and display original passwords."),
+#         ("Admin Management:", "Supports admin credential management with encryption."),
+#         ("Log Management:", "Keeps track of logs and removes outdated log files."),
+#         ("Multi-Format Import:", "Import data from various file formats like CSV and Excel."),
+#         ("Summary Reports:", "Displays a clear summary of updates and denied records."),
+#         ("Cross-Platform Compatibility:", "Works on Windows, macOS, and Linux."),
+#         ("Customizable Appearance:", "Easily adjust themes and colors for the interface."),
+#         ("Error Handling:", "Robust error handling and user-friendly error messages."),
+#         ("Search with Filters:", "Advanced search with filters for Account ID and Target Name."),
+#         ("Password Strength Validation:", "Ensures strong passwords during creation."),
+#         ("One-Click Backup:", "Backup your database with a single click."),
+#     ]
+#
+#     # Fonts for styling
+#     bold_font = ("Arial", 12, "bold")  # Bold and larger font for titles
+#     normal_font = ("Arial", 10)  # Normal font for descriptions
+#
+#     # Add numbered points to the inner_frame
+#     for i, (title, description) in enumerate(numbered_points, start=1):
+#         # Create a text widget for each point
+#         text_widget = tk.Text(inner_frame, wrap="word", bg="#e6f7ff", borderwidth=0, highlightthickness=0, height=2)
+#         text_widget.pack(fill="x", padx=20, pady=5)
+#
+#         # Configure font tags
+#         text_widget.tag_configure("bold", font=bold_font)  # Configure bold font
+#         text_widget.tag_configure("normal", font=normal_font)  # Configure normal font
+#
+#         # Insert the number and bold title
+#         text_widget.insert("end", f"{i}. ", "bold")  # Number in bold
+#         text_widget.insert("end", title, "bold")  # Title in bold font
+#
+#         # Insert the description in normal font
+#         text_widget.insert("end", f" {description}", "normal")
+#
+#         # Prevent user edits while allowing selection
+#         def disable_edit(event):
+#             return "break"  # Prevent editing actions
+#
+#         text_widget.bind("<Key>", disable_edit)  # Block key presses
+#         text_widget.bind("<BackSpace>", disable_edit)  # Block backspace
+#         text_widget.bind("<Delete>", disable_edit)  # Block delete
+#
+#     # Close button
+#     ttk.Button(inner_frame, text="Close", command=about_window.destroy).pack(pady=20, anchor="center")
+#
+#     # Make the window modal
+#     about_window.transient(self.root)
+#     about_window.grab_set()
+#     about_window.focus_force()
 
 if __name__ == "__main__":
     # Initialize logging and database through SupplementClass
