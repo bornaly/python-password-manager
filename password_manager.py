@@ -37,6 +37,7 @@ class SupplementClass:
     Utility class for handling encryption, database operations, logging, and other supplementary tasks.
     """
 
+    ADMIN_EMAIL = None
     LOG_DIR = "logs"
     DB_NAME = "password_manager.db"
     ICON_FILE = "safe_icon.ico"
@@ -125,6 +126,8 @@ class SupplementClass:
         """Initialize the database and create necessary tables."""
         conn = sqlite3.connect(cls.DB_NAME)
         cursor = conn.cursor()
+
+        # Create or update the necessary tables
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS passwords (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -148,8 +151,60 @@ class SupplementClass:
                 encrypted_password TEXT NOT NULL
             )
         """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS app_config (
+                config_key TEXT PRIMARY KEY,
+                config_value TEXT
+            )
+        """)
         conn.commit()
         conn.close()
+
+    @classmethod
+    def get_admin_email(cls):
+        """
+        Retrieve the admin email (ADMIN_EMAIL) from the database.
+        Returns:
+            str: The admin email if found, raises an error otherwise.
+        """
+        try:
+            conn = sqlite3.connect(cls.DB_NAME)
+            cursor = conn.cursor()
+            cursor.execute("SELECT config_value FROM app_config WHERE config_key = 'ADMIN_EMAIL'")
+            result = cursor.fetchone()
+            conn.close()
+
+            if result and result[0]:
+                return result[0]
+            else:
+                raise ValueError("Admin email is not set in the database.")
+        except sqlite3.Error as e:
+            logging.error(f"Database error while retrieving admin email: {e}")
+            raise ValueError("Failed to retrieve admin email.")
+
+
+    @classmethod
+    def save_admin_email(cls, admin_email):
+        """
+        Save or update the admin email (ADMIN_EMAIL) in the database.
+        """
+        try:
+            conn = sqlite3.connect(cls.DB_NAME)
+            cursor = conn.cursor()
+
+            # Upsert the ADMIN_EMAIL into the app_config table
+            cursor.execute("""
+                INSERT INTO app_config (config_key, config_value)
+                VALUES ('ADMIN_EMAIL', ?)
+                ON CONFLICT(config_key) DO UPDATE SET config_value=excluded.config_value
+            """, (admin_email,))
+            conn.commit()
+            conn.close()
+            logging.info("Admin email saved successfully.")
+        except Exception as e:
+            logging.error(f"Failed to save admin email: {e}")
+            raise ValueError("Failed to save admin email.")
+
 
     @classmethod
     def encrypt_data(cls, data):
@@ -202,7 +257,7 @@ class SupplementClass:
         """
         Retrieve the sender email credentials from the database.
         Returns:
-            tuple: (email, decrypted_password) if credentials exist, else (None, None).
+            tuple: (email, decrypted_password) if credentials exist, raises a ValueError otherwise.
         """
         try:
             conn = sqlite3.connect(cls.DB_NAME)
@@ -210,41 +265,60 @@ class SupplementClass:
             cursor.execute("SELECT email, encrypted_password FROM sender_credentials LIMIT 1")
             result = cursor.fetchone()
             conn.close()
+
             if result:
                 email = result[0]
-                decrypted_password = cls.decrypt_data(result[1])  # Decrypt the password
-                return email, decrypted_password
+                encrypted_password = result[1]
+                if email and encrypted_password:
+                    # Decrypt the password
+                    decrypted_password = cls.decrypt_data(encrypted_password)
+                    return email, decrypted_password
+                else:
+                    logging.error("Invalid sender credentials found in the database.")
+                    raise ValueError("Sender credentials are incomplete or corrupted.")
             else:
-                return None, None
+                logging.error("No sender credentials found in the database.")
+                raise ValueError("Sender credentials are not set! Please configure the sender email.")
+        except sqlite3.Error as db_error:
+            logging.error(f"Database error while retrieving sender credentials: {db_error}")
+            raise ValueError("Failed to retrieve sender credentials due to a database error.")
         except Exception as e:
-            logging.error(f"Failed to retrieve sender credentials: {e}")
-            return None, None
+            logging.error(f"Unexpected error while retrieving sender credentials: {e}")
+            raise ValueError("An unexpected error occurred while retrieving sender credentials.")
 
 
     @classmethod
     def send_recovery_email(cls):
         """
-        Send recovery email with admin credentials.
+        Send a recovery email with admin credentials.
         """
         try:
+            # Fetch sender credentials
             sender_email, sender_password = cls.get_sender_credentials()
-            if not sender_email or not sender_password:
-                messagebox.showerror("Error", "Sender credentials are not set!")
-                return
 
+            # Fetch admin email from the database
+            admin_email = cls.get_admin_email()
+
+            # Get the admin password
             admin_password = cls.get_admin_password("admin")
             email_body = f"Your admin credentials:\n\nUsername: admin\nPassword: {admin_password}"
             msg = MIMEText(email_body, 'plain', 'utf-8')
             msg["Subject"] = Header("Password Manager Admin Recovery", 'utf-8')
             msg["From"] = formataddr(("Password Manager", sender_email))
-            msg["To"] = cls.ADMIN_EMAIL
+            msg["To"] = admin_email
+
+            # Send the email
             with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
                 server.login(sender_email, sender_password)
                 server.sendmail(msg["From"], [msg["To"]], msg.as_string())
-            messagebox.showinfo("Success", "Recovery email sent successfully!",parent=cls.root) # Centered messagebox
+
+            messagebox.showinfo("Success", "Recovery email sent successfully!")
+        except ValueError as ve:
+            logging.error(f"Validation error: {ve}")
+            messagebox.showerror("Error", str(ve))
         except Exception as e:
             logging.error(f"Failed to send recovery email: {e}")
-            messagebox.showerror("Error", f"Failed to send email: {e}")
+            messagebox.showerror("Error", f"Failed to send recovery email: {e}")
 
 
 class PasswordManagerGUI:
@@ -384,7 +458,7 @@ class PasswordManagerGUI:
         # Add content to the splash screen
         tk.Label(
             splash,
-            text="Welcome to Password Manager",
+            text="Welcome to Password Manager 2.0",
             font=("Helvetica", 16, "bold"),
             bg="#d1e7ff"
         ).pack(pady=20)
@@ -398,14 +472,14 @@ class PasswordManagerGUI:
 
         tk.Label(
             splash,
-            text="GitHub: https://github.com/bornaly\nEmail: bornaly@gmail.com",
+            text="GitHub: https://github.com/bornaly\n\nEmail: bornaly@gmail.com",
             font=("Helvetica", 10),
             bg="#d1e7ff",
             justify="center"
         ).pack(pady=10)
 
         # Schedule the splash screen to close after 15 seconds and show the main application
-        self.root.after(5000, lambda: self.transition_to_main_app(splash))
+        self.root.after(3000, lambda: self.transition_to_main_app(splash))
 
     def transition_to_main_app(self, splash):
         """
@@ -422,7 +496,6 @@ class PasswordManagerGUI:
         """
 
         def save_email():
-            """Save the sender and receiver email credentials and proceed."""
             email = email_entry.get().strip()
             password = password_entry.get().strip()
             receiver_email = receiver_email_entry.get().strip()
@@ -430,18 +503,17 @@ class PasswordManagerGUI:
             if not email or not password or not receiver_email:
                 messagebox.showerror("Error", "All fields are required!")
                 return
+
             try:
                 # Save sender credentials
                 SupplementClass.save_sender_credentials(email, password)
 
-                # Update ADMIN_EMAIL with receiver email
-                SupplementClass.ADMIN_EMAIL = receiver_email
+                # Save admin email
+                SupplementClass.save_admin_email(receiver_email)
 
-                #messagebox.showinfo("Success", "Sender and Receiver emails saved successfully!")
-                messagebox.showinfo("Success", "Sender and Receiver emails saved successfully!",parent=self.root) # Centered messagebox
+                messagebox.showinfo("Success", "Sender and Receiver emails saved successfully!", parent=self.root)
                 sender_window.destroy()
                 self.setup_admin_credentials()  # Proceed to admin setup
-
 
             except Exception as e:
                 logging.error(f"Failed to save credentials: {e}")
