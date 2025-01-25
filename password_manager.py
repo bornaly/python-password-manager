@@ -9,7 +9,7 @@ A comprehensive password manager with encryption, CRUD operations, email integra
 
 Contact:
 GitHub: https://github.com/bornaly
-Email: bornaly@gmail.com
+Email: cyberwebpen@gmail.comm
 """
 
 import tkinter as tk
@@ -472,7 +472,7 @@ class PasswordManagerGUI:
 
         tk.Label(
             splash,
-            text="GitHub: https://github.com/bornaly\n\nEmail: bornaly@gmail.com",
+            text="GitHub: https://github.com/bornaly\n\nEmail: cyberwebpen@gmail.com",
             font=("Helvetica", 10),
             bg="#d1e7ff",
             justify="center"
