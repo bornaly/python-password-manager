@@ -1,7 +1,7 @@
 """
 Password Manager Script
 Developed by: Faruk Ahmed
-Version: 1.0.0
+Version: 2.0.0
 Date: January 2025
 
 Description:
@@ -9,12 +9,14 @@ A comprehensive password manager with encryption, CRUD operations, email integra
 
 Contact:
 GitHub: https://github.com/bornaly
-Email: cyberwebpen@gmail.comm
+Email: cyberwebpen@gmail.com
 """
 
+import io
 import tkinter as tk
-import webbrowser
-from tkinter import ttk, messagebox, Menu, filedialog
+import webbrowser, os,sys, time
+from tkinter import ttk, Menu, filedialog
+from tkinter import filedialog, messagebox, simpledialog
 import sqlite3
 import bcrypt
 from email.mime.text import MIMEText
@@ -22,15 +24,45 @@ import smtplib
 from email.header import Header
 from email.utils import formataddr
 import logging
-from datetime import datetime
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.padding import PKCS7
 from cryptography.hazmat.backends import default_backend
 import os
 import base64
 from PIL import Image, ImageTk
+import pyAesCrypt
 import pandas as pd
+from datetime import datetime
+from tkinter import simpledialog, messagebox, Toplevel, Label, Button, ttk
 
+BUFFER_SIZE = 64 * 1024  # Buffer size for AES encryption/decryption
+
+
+class ToolTip:
+    def __init__(self, widget, text):
+        self.widget = widget
+        self.text = text
+        self.tooltip = None
+        widget.bind("<Enter>", self.show_tooltip)
+        widget.bind("<Leave>", self.hide_tooltip)
+
+    def show_tooltip(self, event):
+        x, y, _, _ = self.widget.bbox("insert")
+        x += self.widget.winfo_rootx() + 25
+        y += self.widget.winfo_rooty() + 20
+        self.tooltip = tk.Toplevel(self.widget)
+        self.tooltip.wm_overrideredirect(True)
+        self.tooltip.geometry(f"+{x}+{y}")
+        label = tk.Label(
+            self.tooltip, text=self.text, bg="#FFFFE0", fg="black",
+            font=("Helvetica", 10), borderwidth=1, relief="solid"
+        )
+        label.pack()
+
+    def hide_tooltip(self, event):
+        if self.tooltip:
+            self.tooltip.destroy()
+            self.tooltip = None
 
 class SupplementClass:
     """
@@ -128,6 +160,7 @@ class SupplementClass:
         cursor = conn.cursor()
 
         # Create or update the necessary tables
+
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS passwords (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -157,6 +190,20 @@ class SupplementClass:
                 config_value TEXT
             )
         """)
+
+        cursor.execute("""
+                CREATE TABLE IF NOT EXISTS app_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT
+                )
+            """)
+
+        # Insert default value for inactivity timeout if not already present
+        cursor.execute("""
+            INSERT OR IGNORE INTO app_settings (key, value)
+            VALUES ('inactivity_timeout', '300000')  -- Default: 5 minutes in milliseconds
+        """)
+
         conn.commit()
         conn.close()
 
@@ -320,6 +367,19 @@ class SupplementClass:
             logging.error(f"Failed to send recovery email: {e}")
             messagebox.showerror("Error", f"Failed to send recovery email: {e}")
 
+    @classmethod
+    def fetch_inactivity_timeout(cls):
+        try:
+            conn = sqlite3.connect(cls.DB_NAME)
+            cursor = conn.cursor()
+            cursor.execute("SELECT value FROM app_settings WHERE key = 'inactivity_timeout'")
+            result = cursor.fetchone()
+            conn.close()
+            return int(result[0]) if result else 5  # Default to 5 minutes
+        except Exception as e:
+            logging.error(f"Error fetching inactivity timeout: {e}")
+            return 5  # Default to 5 minutes
+
 
 class PasswordManagerGUI:
     """
@@ -329,7 +389,8 @@ class PasswordManagerGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("Password Manager 2.0")
-        self.root.geometry("900x775")  # Set the window size
+        #self.root.geometry("900x775")  # Set the window size
+        self.root.geometry("950x770")  # Set the window size
         self.center_window(self.root)  # Center the window
         self.root.configure(bg="#e6f7ff")
 
@@ -338,6 +399,16 @@ class PasswordManagerGUI:
         self.root.attributes("-topmost", True)
         self.root.attributes("-topmost", False)
 
+        # Fetch timeout from database (default to 3 minutes)
+        self.inactivity_timeout = 3 * 60  # 3 minutes (in seconds)
+        self.last_activity_time = time.time()
+
+        # Bind activity events
+        self.root.bind("<Any-KeyPress>", self.reset_inactivity_timer)
+        self.root.bind("<Motion>", self.reset_inactivity_timer)
+
+        # Start inactivity tracker
+        self.start_inactivity_tracker()
 
         # Initialize logging, database, and icon
         icon_path = SupplementClass.prepare_icon()
@@ -360,11 +431,107 @@ class PasswordManagerGUI:
             self.show_splash_screen()
             self.setup_admin_credentials()
         else:
-            self.authenticate_admin()
             # Show splash screen first, then main UI
             self.show_splash_screen()
+            self.authenticate_admin()
 
+    def reset_inactivity_timer(self, event=None):
+        """Reset the inactivity timer on user activity."""
+        self.last_activity_time = time.time()
 
+    def start_inactivity_tracker(self):
+        """Continuously check for inactivity and disable the main window if timeout occurs."""
+
+        def check_inactivity():
+            # Call the inactivity_time method with correct arguments
+            timeout_occurred, remaining_time = self.inactivity_time(self.last_activity_time, self.inactivity_timeout)
+
+            if timeout_occurred:
+                self.disable_main_window()
+            else:
+                #print(f"Remaining time before timeout: {remaining_time} seconds")
+                self.root.after(1000, check_inactivity)  # Check every second
+
+        self.root.after(1000, check_inactivity)
+
+    def disable_main_window(self):
+        """Disable the main window and show the Login Password Manager window."""
+        self.root.attributes("-disabled", True)  # Disable the main window
+        self.show_login_window()
+
+    def enable_main_window(self):
+        """Re-enable the main window after successful re-login."""
+        self.root.attributes("-disabled", False)  # Re-enable the main window
+
+    def show_login_window(self):
+        """Display the Login Password Manager window for re-authentication."""
+        self.authenticate_admin()  # Call the existing login method
+
+    def terminate_program(self):
+        """Terminate the entire program if the login window is closed."""
+        self.root.destroy()
+        sys.exit(0)  # Force termination
+
+    def authenticate_admin(self):
+        """Authenticate the admin user using the existing Login Password Manager window."""
+        def validate_admin():
+            admin_id = admin_id_entry.get().strip()
+            admin_password = admin_password_entry.get().strip()
+            try:
+                conn = sqlite3.connect("password_manager.db")
+                cursor = conn.cursor()
+                cursor.execute("SELECT encrypted_password FROM admin WHERE admin_id = ?", (admin_id,))
+                result = cursor.fetchone()
+                conn.close()
+                if result and self.verify_password(admin_password, result[0]):
+                    messagebox.showinfo("Success", "Admin authenticated successfully!", parent=login_window)
+                    login_window.destroy()
+                    self.enable_main_window()
+                else:
+                    messagebox.showerror("Error", "Invalid Admin Credentials!", parent=login_window)
+            except Exception as e:
+                messagebox.showerror("Error", f"Authentication failed: {e}", parent=login_window)
+
+        def cancel_login():
+            if messagebox.askyesno("Confirm Exit", "Are you sure you want to exit the application?",
+                                   parent=login_window):
+                self.terminate_program()
+
+        # Create the login window
+        login_window = tk.Toplevel(self.root)
+        login_window.title("Login Password Manager")
+        login_window.geometry("400x300")
+        login_window.transient(self.root)
+        login_window.grab_set()
+        login_window.protocol("WM_DELETE_WINDOW", cancel_login)
+
+        tk.Label(login_window, text="Username:").pack(pady=10)
+        admin_id_entry = ttk.Entry(login_window)
+        admin_id_entry.pack(pady=5)
+
+        tk.Label(login_window, text="Password:").pack(pady=10)
+        admin_password_entry = ttk.Entry(login_window, show="*")
+        admin_password_entry.pack(pady=5)
+
+        ttk.Button(login_window, text="Login", command=validate_admin).pack(pady=20)
+        ttk.Button(login_window, text="Cancel", command=cancel_login).pack(pady=5)
+
+    def verify_password(self, password, encrypted_password):
+        """Verify the entered password with the encrypted password."""
+        return password == encrypted_password  # Replace with actual decryption logic
+
+    @classmethod
+    def fetch_inactivity_timeout(cls):
+        try:
+            conn = sqlite3.connect(cls.DB_NAME)
+            cursor = conn.cursor()
+            cursor.execute("SELECT value FROM app_settings WHERE key = 'inactivity_timeout'")
+            result = cursor.fetchone()
+            conn.close()
+            return int(result[0]) if result else 5  # Default to 5 minutes
+        except Exception as e:
+            logging.error(f"Error fetching inactivity timeout: {e}")
+            return 5  # Default to 5 minutes
 
     @staticmethod
     def check_sender_credentials():
@@ -387,61 +554,142 @@ class PasswordManagerGUI:
     def setup_admin_credentials(self):
         """
         Set up a window for the user to input admin credentials.
-        Ensures the window is centered relative to the main Password Manager window.
+        Features modern styling, a cancel button, and improved layout.
         """
 
-        def save_admin():
+        def save_admin_credentials():
+            """Save the admin credentials and proceed."""
             admin_id = admin_id_entry.get().strip()
             admin_password = admin_password_entry.get().strip()
+
             if not admin_id or not admin_password:
-                messagebox.showerror("Error", "Both fields are required!")
+                messagebox.showerror("Error", "All fields are required!")
                 return
-            SupplementClass.save_admin_credentials(admin_id, admin_password)
-            messagebox.showinfo("Success", "Admin credentials saved successfully!",parent=self.root) # Centered messagebox
-            admin_window.destroy()
-            self.authenticate_admin()  # Show Admin Login window after saving credentials
+
+            try:
+                # Save admin credentials securely
+                SupplementClass.save_admin_credentials(admin_id, admin_password)
+
+                messagebox.showinfo("Success", "Admin credentials saved successfully!", parent=self.root)
+                admin_window.destroy()
+                self.authenticate_admin()  # Proceed to authenticate admin
+
+            except Exception as e:
+                logging.error(f"Failed to save admin credentials: {e}")
+                messagebox.showerror("Error", f"Failed to save admin credentials: {e}")
+
+        def cancel_admin_setup():
+            """
+            Cancel the admin setup process and close both windows.
+            """
+            if messagebox.askyesno("Cancel Setup",
+                                   "Are you sure you want to cancel the setup? This will close the application."):
+                admin_window.destroy()
+                self.root.destroy()
 
         # Create the admin credentials setup window
         admin_window = tk.Toplevel(self.root)
         admin_window.title("Setup Admin Credentials")
-        admin_window.configure(bg="#d1e7ff")
-        self.center_window(admin_window, 400, 250)
+        admin_window.configure(bg="#e6f7ff")
+        admin_window.resizable(False, False)
+
+        # Center the window relative to Password Manager
+        admin_width = 450
+        admin_height = 350
+        root_x = self.root.winfo_x()
+        root_y = self.root.winfo_y()
+        root_width = self.root.winfo_width()
+        root_height = self.root.winfo_height()
+
+        admin_x = root_x + (root_width // 2) - (admin_width // 2)
+        admin_y = root_y + (root_height // 2) - (admin_height // 2)
+        admin_window.geometry(f"{admin_width}x{admin_height}+{admin_x}+{admin_y}")
 
         admin_window.transient(self.root)
         admin_window.grab_set()
         admin_window.focus_force()
 
-        tk.Label(admin_window, text="Create New Admin ID:", font=("Helvetica", 12), bg="#d1e7ff").pack(pady=10)
-        admin_id_entry = ttk.Entry(admin_window, width=30)
+        # Title
+        tk.Label(
+            admin_window,
+            text="Setup Admin Credentials",
+            font=("Helvetica", 16, "bold"),
+            bg="#4682B4",
+            fg="white",
+            relief="raised",
+            pady=10
+        ).pack(fill=tk.X)
+
+        # Admin ID Field
+        tk.Label(admin_window, text="Create Admin ID:", font=("Helvetica", 12), bg="#e6f7ff").pack(pady=10)
+        admin_id_entry = ttk.Entry(admin_window, width=40)
         admin_id_entry.pack(pady=5)
 
-        tk.Label(admin_window, text="Create New Admin Password:", font=("Helvetica", 12), bg="#d1e7ff").pack(pady=10)
-        admin_password_entry = ttk.Entry(admin_window, width=30, show="*")
+        # Admin Password Field
+        tk.Label(admin_window, text="Create Admin Password:", font=("Helvetica", 12), bg="#e6f7ff").pack(pady=10)
+        admin_password_entry = ttk.Entry(admin_window, width=40, show="*")
         admin_password_entry.pack(pady=5)
 
-        save_button = ttk.Button(admin_window, text="Save Admin", command=save_admin)
-        save_button.pack(pady=20)
+        # Password Hint
+        tk.Label(
+            admin_window,
+            text="* Make sure to remember this password.",
+            font=("Helvetica", 10, "italic"),
+            fg="gray",
+            bg="#e6f7ff",
+        ).pack(pady=5)
+
+        # Button Frame
+        button_frame = tk.Frame(admin_window, bg="#e6f7ff")
+        button_frame.pack(pady=20)
+
+        # Save Button
+        save_button = tk.Button(
+            button_frame,
+            text="Save",
+            font=("Helvetica", 12, "bold"),
+            bg="#4CAF50",  # Green
+            fg="white",
+            activebackground="#45a049",
+            activeforeground="white",
+            command=save_admin_credentials
+        )
+        save_button.grid(row=0, column=0, padx=10)
+
+        # Cancel Button
+        cancel_button = tk.Button(
+            button_frame,
+            text="Cancel",
+            font=("Helvetica", 12, "bold"),
+            bg="#F44336",  # Red
+            fg="white",
+            activebackground="#e53935",
+            activeforeground="white",
+            command=cancel_admin_setup
+        )
+        cancel_button.grid(row=0, column=1, padx=10)
+
+        # Bind Enter key to activate the Save button
         admin_window.bind("<Return>", lambda event: save_button.invoke())
         save_button.focus_set()
 
-    # import webbrowser
-    # from tkinter import messagebox
-
     def show_splash_screen(self):
+        import time
         """
-        Display a splash screen for 15 seconds, centered on the Password Manager window.
+        Display a fancy splash screen centered on the Password Manager window.
+        Features include a gradient background, progress bar, and enhanced text styling.
         """
         logging.info("Password Manager initialized. Developed by Faruk Ahmed.")  # Log initialization
 
         # Create the splash screen as a Toplevel window
         splash = tk.Toplevel(self.root)
         splash.title("Welcome")
-        splash.configure(bg="#d1e7ff")
+        splash.configure(bg="#333333")  # Darker background for contrast
+        splash.overrideredirect(True)  # Remove window borders
         splash.resizable(False, False)
 
-        # Center the splash screen on the main Password Manager window
-        splash_width = 500
-        splash_height = 400
+        # Center the splash screen relative to the Password Manager window
+        splash_width, splash_height = 500, 400
         root_x = self.root.winfo_x()
         root_y = self.root.winfo_y()
         root_width = self.root.winfo_width()
@@ -451,35 +699,75 @@ class PasswordManagerGUI:
         splash_y = root_y + (root_height // 2) - (splash_height // 2)
         splash.geometry(f"{splash_width}x{splash_height}+{splash_x}+{splash_y}")
 
-        # Attach the splash screen to the main window
-        splash.transient(self.root)
-        splash.grab_set()  # Block interaction with the main window
+        # Gradient background simulation using canvas
+        canvas = tk.Canvas(splash, width=splash_width, height=splash_height, highlightthickness=0)
+        canvas.pack(fill=tk.BOTH, expand=True)
+        for i in range(256):
+            color = f"#{i:02x}{i:02x}ff"  # Blue gradient
+            canvas.create_rectangle(0, i * (splash_height // 256), splash_width, (i + 1) * (splash_height // 256),
+                                    fill=color, outline="")
 
         # Add content to the splash screen
-        tk.Label(
-            splash,
+        text_shadow_offset = 2  # Offset for the shadow
+
+        # Title text with shadow
+        canvas.create_text(
+            splash_width // 2 + text_shadow_offset, 100 + text_shadow_offset,
             text="Welcome to Password Manager 2.0",
-            font=("Helvetica", 16, "bold"),
-            bg="#d1e7ff"
-        ).pack(pady=20)
+            font=("Helvetica", 20, "bold italic"),
+            fill="black"  # Shadow color
+        )
+        canvas.create_text(
+            splash_width // 2, 100,
+            text="Welcome to Password Manager 2.0",
+            font=("Helvetica", 20, "bold italic"),
+            fill="#FFD700"  # Gold color
+        )
 
-        tk.Label(
-            splash,
-            text="Developed by Faruk Ahmed\n\nDate: Jan/2025",
-            font=("Helvetica", 12),
-            bg="#d1e7ff"
-        ).pack(pady=10)
+        # Developer details with enhanced visibility (bright cyan)
+        canvas.create_text(
+            splash_width // 2 + text_shadow_offset, 200 + text_shadow_offset,
+            text="Developed by Faruk Ahmed\nDate: Jan/2025\n",
+            font=("Helvetica", 16),
+            fill="black"  # Shadow color
+        )
+        canvas.create_text(
+            splash_width // 2, 200,
+            text="Developed by Faruk Ahmed\nDate: Jan/2025\n",
+            font=("Helvetica", 16),
+            fill="#00FFFF"  # Cyan color for high visibility
+        )
 
-        tk.Label(
-            splash,
-            text="GitHub: https://github.com/bornaly\n\nEmail: cyberwebpen@gmail.com",
-            font=("Helvetica", 10),
-            bg="#d1e7ff",
-            justify="center"
-        ).pack(pady=10)
+        # Contact details with enhanced visibility (lime green)
+        canvas.create_text(
+            splash_width // 2 + text_shadow_offset, 260 + text_shadow_offset,
+            text="\nGitHub: https://github.com/bornaly\n\nEmail: cyberwebpen@gmail.com",
+            font=("Helvetica", 14),
+            fill="black"  # Shadow color
+        )
+        canvas.create_text(
+            splash_width // 2, 260,
+            text="\nGitHub: https://github.com/bornaly\n\nEmail: cyberwebpen@gmail.com",
+            font=("Helvetica", 14),
+            fill="#32CD32"  # Lime green for high visibility
+        )
 
-        # Schedule the splash screen to close after 15 seconds and show the main application
-        self.root.after(2000, lambda: self.transition_to_main_app(splash))
+        # Add a progress bar at the bottom
+        progress_frame = tk.Frame(splash, bg="#333333")
+        progress_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(20, 0))
+        progress = ttk.Progressbar(progress_frame, orient=tk.HORIZONTAL, length=splash_width - 50, mode="determinate")
+        progress.pack(pady=10)
+
+        # Simulate progress bar filling
+        def simulate_loading():
+            for value in range(101):
+                splash.update_idletasks()  # Allow UI to update
+                progress["value"] = value
+                time.sleep(0.03)  # Adjust speed of loading
+            self.transition_to_main_app(splash)  # Transition to the main application
+
+        # Delay and show the splash screen with progress simulation
+        self.root.after(550, simulate_loading)
 
     def transition_to_main_app(self, splash):
         """
@@ -492,10 +780,11 @@ class PasswordManagerGUI:
     def setup_sender_email(self):
         """
         Set up a window for the user to input sender email credentials.
-        Includes an additional field for Receiver Email to update ADMIN_EMAIL.
+        Features modern styling, a cancel button, and improved layout.
         """
 
         def save_email():
+            """Save the email credentials and proceed."""
             email = email_entry.get().strip()
             password = password_entry.get().strip()
             receiver_email = receiver_email_entry.get().strip()
@@ -519,31 +808,42 @@ class PasswordManagerGUI:
                 logging.error(f"Failed to save credentials: {e}")
                 messagebox.showerror("Error", f"Failed to save credentials: {e}")
 
+
+        def cancel_email_setup():
+            """
+            Cancel the email setup process and close both windows.
+            """
+            if messagebox.askyesno("Cancel Setup",
+                                   "Are you sure you want to cancel the setup? This will close the application."):
+                sender_window.destroy()
+                self.root.destroy()
+
         def show_gmail_guide():
             """Show Gmail App Password setup guide."""
             guide_window = tk.Toplevel(self.root)
             guide_window.title("How to Setup Gmail App Password")
             guide_window.geometry("500x300")
-            guide_window.configure(bg="#d1e7ff")
+            guide_window.configure(bg="#f7f9fc")
 
             steps = [
-                "1. Go to your Google Account.",
-                "2. On the left navigation panel, choose 'Security'.",
-                "3. Under 'Signing in to Google', select 'App passwords'.",
-                "4. At the bottom, choose 'Select app' and select the app you're using.",
-                "5. Choose 'Select device' and select the device you're using.",
-                "6. Click 'Generate' to create a 16-character App Password."
+                "[1]  Sign in to your Google Account",
+                "[2]  In the left navigation panel, go to 'Security'",
+                "[3]  Under the 'Signing in to Google' section, select 'App passwords'",
+                "[4]  At the bottom of the page, click 'Select app' and choose the app you're using",
+                "[5]  Then, click 'Select device' and choose the device you're using",
+                "[6]  Finally, click 'Generate' to create a 16-character App Password"
             ]
 
-            tk.Label(guide_window, text="Follow these steps:", font=("Helvetica", 12, "bold"), bg="#d1e7ff").pack(
+
+            tk.Label(guide_window, text="Follow these steps:", font=("Helvetica", 12, "bold"), bg="#f7f9fc").pack(
                 pady=10)
             for step in steps:
-                tk.Label(guide_window, text=step, font=("Helvetica", 12), bg="#d1e7ff", anchor="w").pack(anchor="w",
+                tk.Label(guide_window, text=step, font=("Helvetica", 12), bg="#f7f9fc", anchor="w").pack(anchor="w",
                                                                                                          padx=20)
 
             link_label = tk.Label(
                 guide_window, text="Open Gmail App Password Page", font=("Helvetica", 12, "underline"), fg="blue",
-                bg="#d1e7ff", cursor="hand2"
+                bg="#f7f9fc", cursor="hand2"
             )
             link_label.pack(pady=10)
             link_label.bind("<Button-1>", lambda e: webbrowser.open("https://myaccount.google.com/apppasswords", new=1))
@@ -557,12 +857,12 @@ class PasswordManagerGUI:
         # Create the sender email setup window
         sender_window = tk.Toplevel(self.root)
         sender_window.title("Setup Sender Email")
-        sender_window.configure(bg="#d1e7ff")
+        sender_window.configure(bg="#e6f7ff")
         sender_window.resizable(False, False)
 
         # Center the window relative to Password Manager
-        sender_width = 400
-        sender_height = 400
+        sender_width = 450
+        sender_height = 450
         root_x = self.root.winfo_x()
         root_y = self.root.winfo_y()
         root_width = self.root.winfo_width()
@@ -576,112 +876,239 @@ class PasswordManagerGUI:
         sender_window.grab_set()
         sender_window.focus_force()
 
+        # Title
+        tk.Label(
+            sender_window,
+            text="Setup Sender Email",
+            font=("Helvetica", 16, "bold"),
+            bg="#4682B4",
+            fg="white",
+            relief="raised",
+            pady=10
+        ).pack(fill=tk.X)
+
         # Sender Email Field
-        tk.Label(sender_window, text="Sender Email:", font=("Helvetica", 12), bg="#d1e7ff").pack(pady=10)
-        email_entry = ttk.Entry(sender_window, width=30)
+        tk.Label(sender_window, text="Sender Email:", font=("Helvetica", 12), bg="#e6f7ff").pack(pady=10)
+        email_entry = ttk.Entry(sender_window, width=40)
         email_entry.pack(pady=5)
 
         # Gmail App Password Field
-        tk.Label(sender_window, text="** Gmail App Password:", font=("Helvetica", 12), bg="#d1e7ff").pack(pady=10)
-        password_entry = ttk.Entry(sender_window, width=30, show="*")
+        tk.Label(sender_window, text="Gmail App Password:", font=("Helvetica", 12), bg="#e6f7ff").pack(pady=10)
+        password_entry = ttk.Entry(sender_window, width=40, show="*")
         password_entry.pack(pady=5)
 
-        # Sample Password Example
+        # Password Hint
         tk.Label(
             sender_window,
             text="* Example: qwer trew rtyu qsde",
             font=("Helvetica", 10, "italic"),
             fg="gray",
-            bg="#d1e7ff",
+            bg="#e6f7ff",
         ).pack(pady=5)
 
         # Receiver Email Field
-        tk.Label(sender_window, text="Receiver Email:", font=("Helvetica", 12), bg="#d1e7ff").pack(pady=10)
-        receiver_email_entry = ttk.Entry(sender_window, width=30)
+        tk.Label(sender_window, text="Receiver Email:", font=("Helvetica", 12), bg="#e6f7ff").pack(pady=10)
+        receiver_email_entry = ttk.Entry(sender_window, width=40)
         receiver_email_entry.pack(pady=5)
 
         # Gmail Setup Guide Link
         link_label = tk.Label(
-            sender_window, text="** How to setup Gmail App password?", font=("Helvetica", 12, "underline"), fg="blue",
-            bg="#d1e7ff", cursor="hand2"
+            sender_window, text="How to setup Gmail App password?", font=("Helvetica", 12, "underline"), fg="blue",
+            bg="#e6f7ff", cursor="hand2"
         )
         link_label.pack(pady=5)
         link_label.bind("<Button-1>", lambda e: show_gmail_guide())
 
+        # Button Frame
+        button_frame = tk.Frame(sender_window, bg="#e6f7ff")
+        button_frame.pack(pady=20)
+
         # Save Button
-        save_button = ttk.Button(sender_window, text="Save Email", command=save_email)
-        save_button.pack(pady=20)
+        save_button = tk.Button(
+            button_frame,
+            text="Save",
+            font=("Helvetica", 12, "bold"),
+            bg="#4CAF50",  # Green
+            fg="white",
+            activebackground="#45a049",
+            activeforeground="white",
+            command=save_email
+        )
+        save_button.grid(row=0, column=0, padx=10)
+
+        # Cancel Button
+        cancel_button = tk.Button(
+            button_frame,
+            text="Cancel",
+            font=("Helvetica", 12, "bold"),
+            bg="#F44336",  # Red
+            fg="white",
+            activebackground="#e53935",
+            activeforeground="white",
+            command=cancel_email_setup
+        )
+        cancel_button.grid(row=0, column=1, padx=10)
+
         sender_window.bind("<Return>", lambda event: save_button.invoke())
         save_button.focus_set()
 
     def authenticate_admin(self):
         """
         Authenticate the admin user at the start of the application.
-        Ensures that the Password Manager window is properly shown after successful authentication.
+        Centers the Admin Login window relative to the Password Manager window.
+        Adds an icon above the title and placeholder text to Username and Password fields.
         """
 
         def validate_admin():
-            """
-            Validate the admin credentials entered by the user.
-            If valid, destroy the Admin Login window and launch the Password Manager.
-            """
             admin_id = admin_id_entry.get().strip()
             admin_password = admin_password_entry.get().strip()
-
             try:
-                # Validate admin credentials from the database
                 conn = sqlite3.connect(SupplementClass.DB_NAME)
                 cursor = conn.cursor()
                 cursor.execute("SELECT encrypted_password FROM admin WHERE admin_id = ?", (admin_id,))
                 result = cursor.fetchone()
                 conn.close()
-
                 if result and SupplementClass.decrypt_data(result[0]) == admin_password:
-                    messagebox.showinfo("Success", "Admin authenticated successfully!",parent=self.root)  # Centered messagebox
+                    messagebox.showinfo("Success", "Admin authenticated successfully!", parent=self.root)
                     login_window.destroy()
-
-
-                    # Bring the Password Manager window to the top
-                    self.root.lift()
-                    self.root.attributes("-topmost", True)
-                    self.root.attributes("-topmost", False)
                     self.setup_main_ui()
                 else:
-                    messagebox.showerror("Error", "Invalid Admin Credentials!")
+                    messagebox.showerror("Error", "Invalid Admin Credentials!", parent=login_window)
             except Exception as e:
                 logging.error(f"Admin authentication failed: {e}")
-                messagebox.showerror("Error", f"Authentication failed: {e}")
+                messagebox.showerror("Error", f"Authentication failed: {e}", parent=login_window)
+
+        def cancel_login():
+            if messagebox.askyesno("Confirm Exit", "Are you sure you want to exit the application?",
+                                   parent=login_window):
+                self.root.destroy()
+                sys.exit(0)
 
         # Create the login window
         login_window = tk.Toplevel(self.root)
-        login_window.title("Admin Login")
-        login_window.geometry("400x250")
-        login_window.configure(bg="#d1e7ff")
-
-        # Ensure the login window is focused and on top
+        login_window.title("Login Password Manager")
+        login_window.geometry("500x400")
+        login_window.configure(bg="#333333")
         login_window.transient(self.root)
         login_window.grab_set()
         login_window.focus_force()
         login_window.attributes("-topmost", True)
         login_window.attributes("-topmost", False)
 
-        # Center the login window relative to the Password Manager window
-        self.center_window(login_window, width=400, height=250)
+        # Center the login window
+        window_width, window_height = 500, 400
+        root_x = self.root.winfo_x()
+        root_y = self.root.winfo_y()
+        root_width = self.root.winfo_width()
+        root_height = self.root.winfo_height()
+        login_x = root_x + (root_width // 2) - (window_width // 2)
+        login_y = root_y + (root_height // 2) - (window_height // 2)
+        login_window.geometry(f"{window_width}x{window_height}+{login_x}+{login_y}")
 
-        # Admin ID Entry
-        tk.Label(login_window, text="Logon as Admin ID:", font=("Helvetica", 12), bg="#d1e7ff").pack(pady=10)
-        admin_id_entry = ttk.Entry(login_window, width=30)
-        admin_id_entry.pack(pady=5)
+        # Gradient background using canvas
+        gradient_canvas = tk.Canvas(login_window, width=500, height=400, bg="#333333", highlightthickness=0)
+        gradient_canvas.pack(fill=tk.BOTH, expand=True)
 
-        # Admin Password Entry
-        tk.Label(login_window, text="Logon as Admin Password:", font=("Helvetica", 12), bg="#d1e7ff").pack(pady=10)
-        admin_password_entry = ttk.Entry(login_window, width=30, show="*")
-        admin_password_entry.pack(pady=5)
+        for i in range(256):
+            color = f"#{i:02x}{i:02x}ff"
+            gradient_canvas.create_line(0, i * 2, 500, i * 2, fill=color, width=2)
 
-        # Login Button
-        ttk.Button(login_window, text="Login", command=validate_admin).pack(pady=20)
+        # Add icon above the title
+        icon_path = os.path.join(os.path.dirname(__file__), "safe_icon.png")
+        print(f"Resolved icon path: {icon_path}")
+        if os.path.exists(icon_path):
+            try:
+                original_image = Image.open(icon_path)
+                resized_image = original_image.resize((80, 80), Image.Resampling.LANCZOS)  # Use LANCZOS for resizing
+                self.icon_image = ImageTk.PhotoImage(resized_image)
+                gradient_canvas.create_image(250, 60, image=self.icon_image)
+                gradient_canvas.update()
+                print("Icon successfully loaded and displayed!")
+            except Exception as e:
+                print(f"Error loading or displaying icon: {e}")
+        else:
+            print(f"Icon file not found at {icon_path}. Ensure the path is correct.")
 
-        # Bind the Enter key to the login function
+        # Add title below the icon
+        gradient_canvas.create_text(
+            250, 150,
+            text="Welcome to Password Manager 2.0",
+            font=("Helvetica", 18, "bold italic"),
+            fill="#FFD700"
+        )
+        # Add placeholder logic for Username and Password fields
+        def add_placeholder(entry, placeholder_text, show=""):
+            """
+            Add placeholder text to an entry widget. Removes it when focused and restores if empty.
+            Handles password masking when 'show' is specified.
+            """
+
+            def on_focus_in(event):
+                if entry.get() == placeholder_text:
+                    entry.delete(0, tk.END)
+                    entry.configure(foreground="black", show=show)  # Set text color and enable masking if applicable
+
+            def on_focus_out(event):
+                if entry.get().strip() == "":
+                    entry.insert(0, placeholder_text)
+                    entry.configure(foreground="gray", show="")  # Restore placeholder text and disable masking
+
+            entry.insert(0, placeholder_text)
+            entry.configure(foreground="gray", show="")  # Placeholder text color, no masking
+            entry.bind("<FocusIn>", on_focus_in)
+            entry.bind("<FocusOut>", on_focus_out)
+
+        # Username entry with placeholder
+        admin_id_entry = ttk.Entry(login_window, font=("Helvetica", 14), justify="center")
+        gradient_canvas.create_window(250, 200, window=admin_id_entry, width=300, height=40)
+        add_placeholder(admin_id_entry, "Enter Username")
+
+        # Password entry with placeholder and password masking
+        admin_password_entry = ttk.Entry(login_window, font=("Helvetica", 14), justify="center")
+        gradient_canvas.create_window(250, 260, window=admin_password_entry, width=300, height=40)
+        add_placeholder(admin_password_entry, "Enter Password", show="*")
+
+        # Buttons with custom colors and spacing
+        def on_hover(button, color):
+            button["background"] = color
+
+        def on_leave(button, color):
+            button["background"] = color
+
+        # Login button (green) with focus
+        login_button = tk.Button(
+            login_window,
+            text="Login",
+            font=("Helvetica", 14, "bold"),
+            bg="#4CAF50",  # Green background
+            fg="white",
+            activebackground="#45a049",  # Darker green on hover
+            activeforeground="white",
+            relief=tk.RAISED,
+            command=validate_admin
+        )
+        gradient_canvas.create_window(180, 320, window=login_button, width=120, height=40)
+        login_button.bind("<Enter>", lambda e: on_hover(login_button, "#45a049"))
+        login_button.bind("<Leave>", lambda e: on_leave(login_button, "#4CAF50"))
+        login_button.focus_set()  # Set default focus to the Login button
+
+        # Cancel button (red) with spacing
+        cancel_button = tk.Button(
+            login_window,
+            text="Cancel",
+            font=("Helvetica", 14, "bold"),
+            bg="#F44336",  # Red background
+            fg="white",
+            activebackground="#e53935",  # Darker red on hover
+            activeforeground="white",
+            relief=tk.RAISED,
+            command=cancel_login
+        )
+        gradient_canvas.create_window(320, 320, window=cancel_button, width=120, height=40)
+        cancel_button.bind("<Enter>", lambda e: on_hover(cancel_button, "#e53935"))
+        cancel_button.bind("<Leave>", lambda e: on_leave(cancel_button, "#F44336"))
+
+        # Bind Enter key to activate the Login button
         login_window.bind("<Return>", lambda event: validate_admin())
 
     def setup_main_ui(self):
@@ -734,6 +1161,58 @@ class PasswordManagerGUI:
             self.setup_menus()
             logging.debug("Menus set up successfully.")  # Debug statement
 
+            # Add Footer Section for Total Records
+            footer_frame = tk.Frame(self.root, bg="#4682B4", height=50)
+            footer_frame.pack(side=tk.BOTTOM, fill=tk.X)
+
+            # Prevent footer frame from resizing to fit contents
+            footer_frame.pack_propagate(False)
+
+            # Add a canvas for precise positioning
+            footer_canvas = tk.Canvas(footer_frame, bg="#4682B4", highlightthickness=0)
+            footer_canvas.pack(fill=tk.BOTH, expand=True)
+
+            # Add the label on the canvas
+            total_records_label = tk.Label(
+                footer_canvas,
+                text=f"Total Records: {self.get_total_records_count()}",
+                font=("Helvetica", 12, "bold"),
+                bg="#4682B4",
+                fg="white"
+            )
+
+            # Capture the item ID returned by create_window
+            label_item_id = footer_canvas.create_window(
+                footer_canvas.winfo_width() // 2,  # Center horizontally
+                footer_canvas.winfo_height() // 2 - 10,  # Raise it slightly
+                window=total_records_label,
+                anchor="center"
+            )
+
+            # Dynamically refresh footer count
+            self.refresh_footer = lambda: total_records_label.config(
+                text=f"Total Records: {self.get_total_records_count()}"
+            )
+
+            # Ensure the canvas updates its size dynamically
+            def update_canvas_size(event):
+                # Use the stored item ID to update the position of the label
+                footer_canvas.coords(
+                    label_item_id,  # Use the item ID
+                    footer_canvas.winfo_width() // 2,
+                    footer_canvas.winfo_height() // 2 - 10
+                )
+
+            footer_canvas.bind("<Configure>", update_canvas_size)
+
+            # Force refresh the root window
+            self.root.update_idletasks()
+
+            # Dynamically refresh footer count
+            self.refresh_footer = lambda: total_records_label.config(
+                text=f"Total Records: {self.get_total_records_count()}"
+            )
+
             # Force refresh the root window
             self.root.update()
             logging.debug("Main UI setup completed and root window updated.")  # Debug statement
@@ -741,6 +1220,193 @@ class PasswordManagerGUI:
         except Exception as e:
             logging.error(f"Error during setup_main_ui: {e}")
             messagebox.showerror("Error", f"Failed to set up the main UI: {e}")
+
+    def get_total_records_count(self):
+        """
+        Fetch total record count from the database.
+        """
+        try:
+            conn = sqlite3.connect(SupplementClass.DB_NAME)
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM passwords")
+            count = cursor.fetchone()[0]
+            conn.close()
+            return count
+        except Exception as e:
+            logging.error(f"Error fetching total records count: {e}")
+            return 0
+
+    def upload_data(self):
+        """
+        Opens a file dialog to upload data and processes it based on user selection.
+        Allows flexible column matching, previews data, and supports 'override' or 'append' modes.
+        """
+        file_path = filedialog.askopenfilename(
+            title="Select Data File",
+            filetypes=[("Excel Files", "*.xlsx"), ("CSV Files", "*.csv")]
+        )
+
+        if not file_path:
+            return  # User canceled the dialog
+
+        try:
+            # Read the file into a DataFrame
+            if file_path.endswith(".xlsx"):
+                df = pd.read_excel(file_path)
+            elif file_path.endswith(".csv"):
+                df = pd.read_csv(file_path)
+            else:
+                messagebox.showerror("Error", "Unsupported file format!")
+                return
+        except Exception as e:
+            logging.error(f"Error reading file: {e}")
+            messagebox.showerror("Error", f"Failed to read file: {e}")
+            return
+
+        # Normalize column names for flexibility
+        df.columns = df.columns.str.strip().str.lower()  # Remove spaces and convert to lowercase
+        required_columns = {"account id", "password", "target name"}
+        #required_columns = {"account id", "original_password", "target name"}
+
+        # Validate columns
+        if not required_columns.issubset(df.columns):
+            messagebox.showerror(
+                "Error",
+                "The file must contain 'Account ID', 'Password', and 'Target Name' columns."
+            )
+            return
+
+        # Show a preview of the uploaded data
+        self.preview_data(df)
+
+        # Show options to user
+        def process_selection(mode):
+            self.process_uploaded_data(df, mode)
+            selection_window.destroy()
+
+        selection_window = tk.Toplevel(self.root)
+        selection_window.title("Data Upload Mode")
+        selection_window.geometry("400x200")
+        selection_window.configure(bg="#d1e7ff")
+
+        tk.Label(
+            selection_window,
+            text="Choose Upload Mode:",
+            font=("Helvetica", 14),
+            bg="#d1e7ff"
+        ).pack(pady=20)
+
+        ttk.Button(
+            selection_window,
+            text="Complete Override",
+            command=lambda: process_selection("override")
+        ).pack(pady=10)
+
+        ttk.Button(
+            selection_window,
+            text="Append New Data",
+            command=lambda: process_selection("append")
+        ).pack(pady=10)
+
+        selection_window.transient(self.root)
+        selection_window.grab_set()
+        selection_window.focus_force()
+
+    def preview_data(self, df):
+        """
+        Displays a preview window for the uploaded data.
+
+        Args:
+            df (pd.DataFrame): The uploaded data to preview.
+        """
+        preview_window = tk.Toplevel(self.root)
+        preview_window.title("Data Preview")
+        preview_window.geometry("800x400")
+        preview_window.configure(bg="#e6f7ff")
+
+        tk.Label(
+            preview_window,
+            text="Preview of Uploaded Data",
+            font=("Helvetica", 14, "bold"),
+            bg="#e6f7ff"
+        ).pack(pady=10)
+
+        frame = tk.Frame(preview_window, bg="#e6f7ff")
+        frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        canvas = tk.Canvas(frame, bg="#e6f7ff")
+        scrollbar = ttk.Scrollbar(frame, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        inner_frame = tk.Frame(canvas, bg="#e6f7ff")
+        canvas.create_window((0, 0), window=inner_frame, anchor="nw")
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Add column headers
+        for col_idx, col_name in enumerate(df.columns):
+            tk.Label(
+                inner_frame,
+                text=col_name,
+                font=("Helvetica", 12, "bold"),
+                bg="#4682B4",
+                fg="white",
+                width=20
+            ).grid(row=0, column=col_idx, padx=5, pady=5, sticky="nsew")
+
+        # Add data rows
+        for row_idx, row_data in enumerate(df.values):
+            for col_idx, cell_value in enumerate(row_data):
+                bg_color = "#F0F8FF" if row_idx % 2 == 0 else "#E6E6FA"
+                tk.Label(
+                    inner_frame,
+                    text=str(cell_value),
+                    font=("Helvetica", 12),
+                    bg=bg_color,
+                    width=20
+                ).grid(row=row_idx + 1, column=col_idx, padx=5, pady=5, sticky="nsew")
+
+        # Update scroll region
+        inner_frame.update_idletasks()
+        canvas.configure(scrollregion=canvas.bbox("all"))
+
+        # Close Button
+        ttk.Button(preview_window, text="Close", command=preview_window.destroy).pack(pady=10)
+
+    def process_uploaded_data(self, df, mode):
+        """
+        Processes uploaded data based on the selected mode ('override' or 'append').
+        Includes a preview window for confirmation.
+        """
+        if mode == "override":
+            # Call the preview window to confirm the override
+            self.show_preview_and_confirm(df, mode)
+        elif mode == "append":
+            # Identify new records to append
+            conn = sqlite3.connect(SupplementClass.DB_NAME)
+            cursor = conn.cursor()
+
+            # Get all existing records
+            existing_records = cursor.execute(
+                "SELECT account_id, target_name FROM passwords"
+            ).fetchall()
+
+            # Create a set for quick lookup
+            existing_set = set((row[0], row[1]) for row in existing_records)
+
+            # Filter new records
+            new_records = df[
+                ~df.apply(lambda row: (row["Account ID"], row["Target Name"]) in existing_set, axis=1)
+            ]
+
+            conn.close()
+
+            if not new_records.empty:
+                # Call the preview window to confirm the append
+                self.show_preview_and_confirm(new_records, mode)
+            else:
+                messagebox.showinfo("No New Data", "No new records to append. All data already exists in the database.")
+
 
     def show_upload_summary(self, uploaded_records):
         """
@@ -1202,57 +1868,6 @@ class PasswordManagerGUI:
                 tk.Label(denied_frame, text="No records were denied.", bg="#e6f7ff",
                          font=("Helvetica", 12, "italic")).grid(row=2, column=0, columnspan=3, pady=5)
 
-    def upload_data(self):
-        """
-        Opens a file dialog to upload data and processes it based on user selection.
-        """
-        file_path = filedialog.askopenfilename(
-            title="Select Data File",
-            filetypes=[("Excel Files", "*.xlsx"), ("CSV Files", "*.csv")]
-        )
-
-        if not file_path:
-            return  # User canceled the dialog
-
-        try:
-            # Read the file into a DataFrame
-            if file_path.endswith(".xlsx"):
-                df = pd.read_excel(file_path)
-            elif file_path.endswith(".csv"):
-                df = pd.read_csv(file_path)
-            else:
-                messagebox.showerror("Error", "Unsupported file format!")
-                return
-        except Exception as e:
-            logging.error(f"Error reading file: {e}")
-            messagebox.showerror("Error", f"Failed to read file: {e}")
-            return
-
-        # Validate columns
-        required_columns = {"Account ID", "Password", "Target Name"}
-        if not required_columns.issubset(df.columns):
-            messagebox.showerror("Error", "The file must contain 'Account ID', 'Password', and 'Target Name' columns.")
-            return
-
-        # Show options to user
-        def process_selection(mode):
-            self.process_uploaded_data(df, mode)
-            selection_window.destroy()
-
-        selection_window = tk.Toplevel(self.root)
-        selection_window.title("Data Upload Mode")
-        selection_window.geometry("400x200")
-        selection_window.configure(bg="#d1e7ff")
-
-        tk.Label(selection_window, text="Choose Upload Mode:", font=("Helvetica", 14), bg="#d1e7ff").pack(pady=20)
-        ttk.Button(selection_window, text="Complete Override", command=lambda: process_selection("override")).pack(
-            pady=10)
-        ttk.Button(selection_window, text="Append New Data", command=lambda: process_selection("append")).pack(pady=10)
-
-        selection_window.transient(self.root)
-        selection_window.grab_set()
-        selection_window.focus_force()
-
     def refresh_table(self):
         """
         Refresh the grid to ensure it displays up-to-date data from the database with consistent coloring.
@@ -1287,12 +1902,18 @@ class PasswordManagerGUI:
     def retrieve_password(self):
         """
         Retrieve the original password based on Account ID and Target Name or the selected record in the grid.
-        Provides a neatly aligned window with options to expose the password.
+        Before exposing the password, challenge the user to enter the admin password.
+        Only one row can be selected at a time for retrieval.
         """
         selected_items = self.table.selection()
 
+        # Check if more than one row is selected
+        if len(selected_items) > 1:
+            messagebox.showerror("Error", "Please select only one row at a time to retrieve the password!")
+            return
+
         if selected_items:
-            # If a record is selected, use it for retrieval
+            # If a single record is selected, use it for retrieval
             selected_item = selected_items[0]
             values = self.table.item(selected_item, "values")
             account_id, hashed_password, target_name = values
@@ -1318,79 +1939,94 @@ class PasswordManagerGUI:
             if result:
                 original_password = result[0]
 
-                # Create the password retrieval window
-                retrieve_window = tk.Toplevel(self.root)
-                retrieve_window.title("Retrieve Password")
-                retrieve_window.geometry("600x300")  # Adjusted width
-                self.center_window(retrieve_window)  # Center it on the main window
-                retrieve_window.configure(bg="#e6f7ff")
+                # Create the admin password verification window
+                def verify_admin_password():
+                    entered_password = admin_password_entry.get().strip()
 
-                # Account ID
-                tk.Label(retrieve_window, text="Account ID:", font=("Helvetica", 12), bg="#e6f7ff", anchor="w").grid(
-                    row=0, column=0, padx=10, pady=10, sticky="w"
-                )
-                tk.Label(retrieve_window, text=account_id, font=("Helvetica", 10), bg="#F0F8FF", width=30,
-                         anchor="w").grid(
-                    row=0, column=1, padx=10, pady=10, sticky="w"
-                )
+                    try:
+                        conn = sqlite3.connect(SupplementClass.DB_NAME)
+                        cursor = conn.cursor()
+                        cursor.execute("SELECT encrypted_password FROM admin WHERE admin_id = ?", ("admin",))
+                        admin_data = cursor.fetchone()
+                        conn.close()
 
-                # Hashed Password
-                tk.Label(retrieve_window, text="Hashed Password:", font=("Helvetica", 12), bg="#e6f7ff",
-                         anchor="w").grid(
-                    row=1, column=0, padx=10, pady=10, sticky="w"
-                )
-                tk.Label(retrieve_window, text=hashed_password, font=("Helvetica", 12), bg="#F0F8FF", width=30,
-                         anchor="w").grid(
-                    row=1, column=1, padx=10, pady=10, sticky="w"
-                )
+                        if admin_data and SupplementClass.decrypt_data(admin_data[0]) == entered_password:
+                            # Correct admin password, open password retrieval window
+                            verify_window.destroy()
+                            show_retrieve_window(original_password)
+                        else:
+                            messagebox.showerror("Error", "Incorrect admin password!", parent=verify_window)
 
-                # Target Name
-                tk.Label(retrieve_window, text="Target Name:", font=("Helvetica", 12), bg="#e6f7ff", anchor="w").grid(
-                    row=2, column=0, padx=10, pady=10, sticky="w"
-                )
-                tk.Label(retrieve_window, text=target_name, font=("Helvetica", 12), bg="#F0F8FF", width=30,
-                         anchor="w").grid(
-                    row=2, column=1, padx=10, pady=10, sticky="w"
-                )
+                    except Exception as e:
+                        logging.error(f"Failed to verify admin password: {e}")
+                        messagebox.showerror("Error", "Failed to verify admin password.", parent=verify_window)
 
-                # Password
-                tk.Label(retrieve_window, text="Password:", font=("Helvetica", 12), bg="#e6f7ff", anchor="w").grid(
-                    row=3, column=0, padx=10, pady=10, sticky="w"
-                )
-                password_label = tk.Label(retrieve_window, text="********", font=("Helvetica", 12), bg="yellow",
-                                          width=30, anchor="w")
-                password_label.grid(row=3, column=1, padx=10, pady=10, sticky="w")
+                def cancel_verification():
+                    """Cancel the verification process."""
+                    verify_window.destroy()
 
-                def expose_password():
-                    """Unhash and display the original password."""
-                    expose_button.config(state="disabled")  # Disable the button after exposing
-                    password_label.config(text=original_password)
+                # Admin verification window
+                verify_window = tk.Toplevel(self.root)
+                verify_window.title("Admin Password Verification")
+                verify_window.geometry("400x200")
+                self.center_window(verify_window)
+                verify_window.configure(bg="#e6f7ff")  # Match Password Manager's background color
+                verify_window.transient(self.root)
+                verify_window.grab_set()
 
-                # Expose Button
-                expose_button = tk.Button(
-                    retrieve_window,
-                    text="Expose",
-                    command=expose_password,
-                    bg="green",
-                    fg="white",
+                tk.Label(
+                    verify_window,
+                    text="Admin Password Verification",
+                    font=("Helvetica", 16, "bold italic"),
+                    bg="#e6f7ff",
+                    fg="#333333"  # Darker text for contrast
+                ).pack(pady=10)
+
+                tk.Label(
+                    verify_window,
+                    text="Enter Admin Password to Expose the Password:",
+                    font=("Helvetica", 12),
+                    bg="#e6f7ff"
+                ).pack(pady=10)
+
+                admin_password_entry = ttk.Entry(verify_window, width=30, show="*")
+                admin_password_entry.pack(pady=5)
+
+                # Buttons with vibrant colors
+                button_frame = tk.Frame(verify_window, bg="#e6f7ff")
+                button_frame.pack(pady=10)
+
+                verify_button = tk.Button(
+                    button_frame,
+                    text="Verify",
+                    command=verify_admin_password,
                     font=("Helvetica", 12, "bold"),
-                    relief="raised",
+                    bg="#4CAF50",  # Green background
+                    fg="white",
+                    activebackground="#45a049",  # Darker green on hover
+                    activeforeground="white",
+                    relief=tk.RAISED,
                     bd=2
                 )
-                expose_button.grid(row=3, column=2, padx=10, pady=10)
+                verify_button.pack(side=tk.LEFT, padx=5)
 
-                def close_window():
-                    """Close the retrieve window and clear the fields in the main interface."""
-                    retrieve_window.destroy()
-                    # Clear the fields in the main Password Manager window
-                    self.account_id_entry.delete(0, tk.END)
-                    self.password_entry.delete(0, tk.END)
-                    self.target_entry.delete(0, tk.END)
-
-                # Close Button
-                ttk.Button(retrieve_window, text="Close", command=close_window).grid(
-                    row=4, column=0, columnspan=3, pady=20, sticky="n"
+                cancel_button = tk.Button(
+                    button_frame,
+                    text="Cancel",
+                    command=cancel_verification,
+                    font=("Helvetica", 12, "bold"),
+                    bg="#F44336",  # Red background
+                    fg="white",
+                    activebackground="#e53935",  # Darker red on hover
+                    activeforeground="white",
+                    relief=tk.RAISED,
+                    bd=2
                 )
+                cancel_button.pack(side=tk.LEFT, padx=5)
+
+                verify_window.bind("<Return>", lambda event: verify_admin_password())
+                admin_password_entry.focus_set()
+
             else:
                 messagebox.showerror("Error", "No matching record found!")
 
@@ -1398,11 +2034,69 @@ class PasswordManagerGUI:
             logging.error(f"Error retrieving password: {e}")
             messagebox.showerror("Error", "An error occurred while retrieving the password. Check logs for details.")
 
+        def show_retrieve_window(original_password):
+            """
+            Show the password retrieval window after successful admin verification.
+            """
+            retrieve_window = tk.Toplevel(self.root)
+            retrieve_window.title("Retrieve Password")
+            retrieve_window.geometry("600x300")
+            self.center_window(retrieve_window)
+            retrieve_window.configure(bg="#e6f7ff")
+
+            # Account ID
+            tk.Label(retrieve_window, text="Account ID:", font=("Helvetica", 12), bg="#e6f7ff", anchor="w").grid(
+                row=0, column=0, padx=10, pady=10, sticky="w"
+            )
+            tk.Label(retrieve_window, text=account_id, font=("Helvetica", 10), bg="#F0F8FF", width=30,
+                     anchor="w").grid(
+                row=0, column=1, padx=10, pady=10, sticky="w"
+            )
+
+            # Target Name
+            tk.Label(retrieve_window, text="Target Name:", font=("Helvetica", 12), bg="#e6f7ff", anchor="w").grid(
+                row=1, column=0, padx=10, pady=10, sticky="w"
+            )
+            tk.Label(retrieve_window, text=target_name, font=("Helvetica", 10), bg="#F0F8FF", width=30,
+                     anchor="w").grid(
+                row=1, column=1, padx=10, pady=10, sticky="w"
+            )
+
+            # Password
+            tk.Label(retrieve_window, text="Password:", font=("Helvetica", 12), bg="#e6f7ff", anchor="w").grid(
+                row=2, column=0, padx=10, pady=10, sticky="w"
+            )
+            password_label = tk.Label(retrieve_window, text="********", font=("Helvetica", 12), bg="yellow", width=30,
+                                      anchor="w")
+            password_label.grid(row=2, column=1, padx=10, pady=10, sticky="w")
+
+            def expose_password():
+                """Unmask and display the original password."""
+                expose_button.config(state="disabled")
+                password_label.config(text=original_password)
+
+            expose_button = tk.Button(
+                retrieve_window,
+                text="Expose",
+                command=expose_password,
+                bg="green",
+                fg="white",
+                font=("Helvetica", 12, "bold"),
+                relief="raised",
+                bd=2
+            )
+            expose_button.grid(row=2, column=2, padx=10, pady=10)
+
+            # Close Button
+            ttk.Button(retrieve_window, text="Close", command=retrieve_window.destroy).grid(
+                row=3, column=0, columnspan=3, pady=20, sticky="n"
+            )
+
     def edit_selected(self):
         """
         Open a new window to edit the selected record from the grid.
-        Allows modification of the account ID, password, and target name fields.
-        Includes a Cancel button with confirmation.
+        Challenges the user with an admin password before exposing the original password.
+        Allows modification of Account ID, Password, and Target Name.
         """
         selected_items = self.table.selection()
         if len(selected_items) != 1:
@@ -1432,98 +2126,244 @@ class PasswordManagerGUI:
         # Open edit window
         edit_window = tk.Toplevel(self.root)
         edit_window.title("Edit Password")
-        edit_window.geometry("400x300")
+        edit_window.geometry("500x350")
         edit_window.configure(bg="#e6f7ff")
         self.center_window(edit_window)
+        edit_window.transient(self.root)
+        edit_window.grab_set()
 
-        # Populate fields
-        tk.Label(edit_window, text="Account ID:", font=("Helvetica", 12), bg="#e6f7ff").pack(pady=10)
-        account_id_entry = ttk.Entry(edit_window, width=30)
+        # Account ID
+        tk.Label(edit_window, text="Account ID:", font=("Helvetica", 12), bg="#e6f7ff").grid(row=0, column=0, padx=10,
+                                                                                             pady=10, sticky="w")
+        account_id_entry = ttk.Entry(edit_window, font=("Helvetica", 12), width=30)
         account_id_entry.insert(0, old_account_id)
-        account_id_entry.pack(pady=5)
+        account_id_entry.grid(row=0, column=1, padx=10, pady=10)
 
-        tk.Label(edit_window, text="Password:", font=("Helvetica", 12), bg="#e6f7ff").pack(pady=10)
-        password_entry = ttk.Entry(edit_window, width=30)
-        password_entry.insert(0, original_password)
-        password_entry.pack(pady=5)
+        # Password
+        tk.Label(edit_window, text="Password:", font=("Helvetica", 12), bg="#e6f7ff").grid(row=1, column=0, padx=10,
+                                                                                           pady=10, sticky="w")
+        password_entry = ttk.Entry(edit_window, font=("Helvetica", 12), width=25, show="*")
+        password_entry.insert(0, "********")  # Masked initially
+        password_entry.grid(row=1, column=1, padx=10, pady=10, sticky="w")
 
-        tk.Label(edit_window, text="Target Name:", font=("Helvetica", 12), bg="#e6f7ff").pack(pady=10)
-        target_entry = ttk.Entry(edit_window, width=30)
+        # Admin Password Verification
+        def verify_admin_password(admin_password_entry, verify_window):
+            """
+            Verify admin password to expose the original password.
+            """
+            admin_password = admin_password_entry.get().strip()
+            try:
+                conn = sqlite3.connect(SupplementClass.DB_NAME)
+                cursor = conn.cursor()
+                cursor.execute("SELECT encrypted_password FROM admin WHERE admin_id = ?", ("admin",))
+                admin_data = cursor.fetchone()
+                conn.close()
+
+                if admin_data and SupplementClass.decrypt_data(admin_data[0]) == admin_password:
+                    # Correct admin password; expose the password
+                    verify_window.destroy()
+                    password_entry.config(show="")  # Remove masking
+                    password_entry.delete(0, tk.END)
+                    password_entry.insert(0, original_password)
+                else:
+                    messagebox.showerror("Error", "Incorrect admin password. Please try again!", parent=verify_window)
+                    admin_password_entry.delete(0, tk.END)
+            except Exception as e:
+                logging.error(f"Admin password verification failed: {e}")
+                messagebox.showerror("Error", "Failed to verify admin password.", parent=verify_window)
+
+        def expose_password():
+            """
+            Open admin password verification window to expose the original password.
+            """
+            verify_window = tk.Toplevel(edit_window)
+            verify_window.title("Admin Password Verification")
+            verify_window.geometry("400x200")
+            self.center_window(verify_window)
+            verify_window.configure(bg="#e6f7ff")
+            verify_window.transient(edit_window)
+            verify_window.grab_set()
+
+            tk.Label(
+                verify_window,
+                text="Admin Password Verification",
+                font=("Helvetica", 16, "bold italic"),
+                bg="#e6f7ff",
+                fg="#333333"
+            ).pack(pady=10)
+
+            tk.Label(
+                verify_window,
+                text="Enter Admin Password to Expose the Password:",
+                font=("Helvetica", 12),
+                bg="#e6f7ff"
+            ).pack(pady=10)
+
+            admin_password_entry = ttk.Entry(verify_window, width=30, show="*")
+            admin_password_entry.pack(pady=5)
+
+            # Button frame for alignment
+            button_frame = tk.Frame(verify_window, bg="#e6f7ff")
+            button_frame.pack(pady=10)
+
+            # Verify button
+            verify_button = tk.Button(
+                button_frame,
+                text="Verify",
+                command=lambda: verify_admin_password(admin_password_entry, verify_window),
+                bg="#4CAF50",
+                fg="white",
+                font=("Helvetica", 12, "bold"),
+                activebackground="#45a049",
+                activeforeground="white",
+                relief=tk.RAISED
+            )
+            verify_button.grid(row=0, column=0, padx=20)
+
+            # Cancel button
+            cancel_button = tk.Button(
+                button_frame,
+                text="Cancel",
+                command=verify_window.destroy,
+                bg="#F44336",
+                fg="white",
+                font=("Helvetica", 12, "bold"),
+                activebackground="#e53935",
+                activeforeground="white",
+                relief=tk.RAISED
+            )
+            cancel_button.grid(row=0, column=1, padx=20)
+
+            # Set focus on the Verify button and bind Enter key to trigger it
+            verify_button.focus_set()
+            verify_window.bind("<Return>", lambda event: verify_button.invoke())
+
+        expose_button = tk.Button(
+            edit_window,
+            text="Expose",
+            command=expose_password,
+            bg="#FF9800",
+            fg="white",
+            font=("Helvetica", 10, "bold"),
+            activebackground="#FFB74D",
+            activeforeground="white",
+            relief=tk.RAISED
+        )
+        expose_button.grid(row=1, column=2, padx=10, pady=10, sticky="w")
+
+        # Target Name
+        tk.Label(edit_window, text="Target Name:", font=("Helvetica", 12), bg="#e6f7ff").grid(row=2, column=0, padx=10,
+                                                                                              pady=10, sticky="w")
+        target_entry = ttk.Entry(edit_window, font=("Helvetica", 12), width=30)
         target_entry.insert(0, target_name)
-        target_entry.pack(pady=5)
+        target_entry.grid(row=2, column=1, padx=10, pady=10)
 
         def save_changes():
             """
             Save changes made in the edit window to the database and refresh the table.
             """
-            new_account_id = account_id_entry.get().strip()
-            new_password = password_entry.get().strip()
-            new_target_name = target_entry.get().strip()
+            updated_account_id = account_id_entry.get().strip()
+            updated_password = password_entry.get().strip()
+            updated_target_name = target_entry.get().strip()
 
-            if not new_account_id or not new_password or not new_target_name:
-                messagebox.showerror("Error", "All fields are required!")
+            # Dictionary to store updates
+            updates = {}
+
+            # Compare each field to its original value
+            if updated_account_id != old_account_id:
+                updates["account_id"] = updated_account_id
+            if updated_target_name != target_name:
+                updates["target_name"] = updated_target_name
+
+            # Handle password field: check if it was exposed and updated
+            if updated_password != "******":  # Ensure password is not left masked
+                hashed_password = bcrypt.hashpw(updated_password.encode(), bcrypt.gensalt()).decode()
+                updates["hashed_password"] = hashed_password
+                updates["original_password"] = updated_password  # Update the original password if needed
+
+            # Debugging: Check updates dictionary
+            print("Updates dictionary:", updates)
+
+            # If no fields were updated, show a message
+            if not updates:
+                messagebox.showinfo("No Changes", "No changes detected. Nothing was updated.", parent=edit_window)
                 return
 
+            # Update the record in the database
             try:
                 conn = sqlite3.connect(SupplementClass.DB_NAME)
                 cursor = conn.cursor()
 
-                # Check for duplicate Account ID and Target Name combination
-                if new_account_id != old_account_id or new_target_name != target_name:
-                    cursor.execute(
-                        "SELECT COUNT(*) FROM passwords WHERE account_id = ? AND target_name = ?",
-                        (new_account_id, new_target_name),
-                    )
-                    if cursor.fetchone()[0] > 0:
-                        messagebox.showerror("Error", "The new Account ID and Target Name combination already exists!")
-                        return
+                # Build the SQL query dynamically
+                set_clause = ", ".join(f"{key} = ?" for key in updates.keys())
+                sql = f"UPDATE passwords SET {set_clause} WHERE account_id = ? AND target_name = ?"
+                params = list(updates.values()) + [old_account_id.strip(), target_name.strip()]
 
-                # Hash the new password
-                hashed_password = bcrypt.hashpw(new_password.encode(), bcrypt.gensalt()).decode()
+                # Debugging: Check SQL query and params
+                print("SQL Query:", sql)
+                print("Query Parameters:", params)
 
-                # Perform the update
-                cursor.execute(
-                    """
-                    UPDATE passwords 
-                    SET account_id = ?, 
-                        original_password = ?, 
-                        hashed_password = ?, 
-                        target_name = ?
-                    WHERE account_id = ?
-                    """,
-                    (new_account_id, new_password, hashed_password, new_target_name, old_account_id),
-                )
+                cursor.execute(sql, params)
+
+                # Debugging: Check how many rows were affected
+                rows_affected = cursor.rowcount
+                print(f"Rows affected: {rows_affected}")
+
+                # Fetch the updated record for confirmation
+                cursor.execute("SELECT * FROM passwords WHERE account_id = ? AND target_name = ?",
+                               [updated_account_id.strip(), updated_target_name.strip()])
+                updated_record = cursor.fetchone()
+                print(f"Updated record: {updated_record}")  # Debug
 
                 conn.commit()
                 conn.close()
 
-                # Refresh the table to show updated data
-                self.refresh_table()
+                if rows_affected == 0:
+                    messagebox.showwarning("No Match", "No matching record was found. Update failed.",
+                                           parent=edit_window)
+                    return
 
-                # Notify the user and close the edit window
-                messagebox.showinfo("Success", f"Record updated successfully for Account ID: {new_account_id}.")
+                messagebox.showinfo("Success", "Record updated successfully.", parent=edit_window)
+                self.refresh_table()  # Refresh the table to show updated records
                 edit_window.destroy()
-
             except Exception as e:
-                logging.error(f"Error saving changes: {e}")
-                messagebox.showerror("Error", "Failed to save changes!")
+                logging.error(f"Error updating record: {e}")
+                messagebox.showerror("Error", "Failed to update the record. Check logs for details.",
+                                     parent=edit_window)
+            self.refresh_table()  # Refresh the table to show updated records
 
-        def cancel_changes():
-            """
-            Confirm and close the edit window without saving changes.
-            """
-            # if messagebox.askyesno("Confirm Cancel", "Are you sure you want to discard changes?"):
-            #     edit_window.destroy()
+        # Cancel changes
+        def cancel_edit():
             edit_window.destroy()
 
-        # Add Save and Cancel buttons
+        # Buttons
         button_frame = tk.Frame(edit_window, bg="#e6f7ff")
-        button_frame.pack(pady=20)
+        button_frame.grid(row=3, column=0, columnspan=3, pady=20)
 
-        save_button = ttk.Button(button_frame, text="Save", command=save_changes)
+        save_button = tk.Button(
+            button_frame,
+            text="Save",
+            command=save_changes,
+            bg="#4CAF50",
+            fg="white",
+            font=("Helvetica", 12, "bold"),
+            activebackground="#45a049",
+            activeforeground="white",
+            relief=tk.RAISED
+        )
         save_button.grid(row=0, column=0, padx=10)
 
-        cancel_button = ttk.Button(button_frame, text="Cancel", command=cancel_changes)
+        cancel_button = tk.Button(
+            button_frame,
+            text="Cancel",
+            command=cancel_edit,
+            bg="#F44336",
+            fg="white",
+            font=("Helvetica", 12, "bold"),
+            activebackground="#e53935",
+            activeforeground="white",
+            relief=tk.RAISED
+        )
         cancel_button.grid(row=0, column=1, padx=10)
 
 
@@ -1611,8 +2451,8 @@ class PasswordManagerGUI:
     def setup_password_crud(self):
         """
         Set up CRUD functionality for managing passwords with a colorful data grid.
-        Includes vertical and horizontal scrollbars, a search field,
-        and right-click or Ctrl+C to copy rows, with support for mouse drag selection.
+        Includes larger input fields, vertical and horizontal scrollbars,
+        a search field, right-click menu, copy functionality, and drag selection.
         """
 
         def save_password():
@@ -1695,20 +2535,23 @@ class PasswordManagerGUI:
         input_frame = tk.Frame(self.root, bg="#e6f7ff")
         input_frame.pack(pady=10)
 
-        tk.Label(input_frame, text="Account ID:", font=("Helvetica", 12), bg="#e6f7ff").grid(row=0, column=0, padx=15,
-                                                                                             pady=10)
-        self.account_id_entry = ttk.Entry(input_frame, width=30)
-        self.account_id_entry.grid(row=0, column=1, padx=15, pady=10)
+        # Account ID Entry
+        tk.Label(input_frame, text="Account ID:", font=("Helvetica", 14), bg="#e6f7ff").grid(row=0, column=0, padx=15,
+                                                                                             pady=10, sticky="e")
+        self.account_id_entry = ttk.Entry(input_frame, font=("Helvetica", 14), justify="center", width=35)
+        self.account_id_entry.grid(row=0, column=1, padx=15, pady=10, sticky="w")
 
-        tk.Label(input_frame, text="Password:", font=("Helvetica", 12), bg="#e6f7ff").grid(row=1, column=0, padx=15,
-                                                                                           pady=10)
-        self.password_entry = ttk.Entry(input_frame, width=30, show="*")
-        self.password_entry.grid(row=1, column=1, padx=15, pady=10)
+        # Password Entry
+        tk.Label(input_frame, text="Password:", font=("Helvetica", 14), bg="#e6f7ff").grid(row=1, column=0, padx=15,
+                                                                                           pady=10, sticky="e")
+        self.password_entry = ttk.Entry(input_frame, font=("Helvetica", 14), justify="center", width=35, show="*")
+        self.password_entry.grid(row=1, column=1, padx=15, pady=10, sticky="w")
 
-        tk.Label(input_frame, text="Target Name:", font=("Helvetica", 12), bg="#e6f7ff").grid(row=2, column=0, padx=15,
-                                                                                              pady=10)
-        self.target_entry = ttk.Entry(input_frame, width=30)
-        self.target_entry.grid(row=2, column=1, padx=15, pady=10)
+        # Target Name Entry
+        tk.Label(input_frame, text="Target Name:", font=("Helvetica", 14), bg="#e6f7ff").grid(row=2, column=0, padx=15,
+                                                                                              pady=10, sticky="e")
+        self.target_entry = ttk.Entry(input_frame, font=("Helvetica", 14), justify="center", width=35)
+        self.target_entry.grid(row=2, column=1, padx=15, pady=10, sticky="w")
 
         # Buttons
         button_frame = tk.Frame(self.root, bg="#e6f7ff")
@@ -1734,21 +2577,23 @@ class PasswordManagerGUI:
         search_frame = tk.Frame(self.root, bg="#e6f7ff")
         search_frame.pack(pady=10)
 
-        tk.Label(search_frame, text="Search:", font=("Helvetica", 12), bg="#e6f7ff").grid(row=0, column=0, padx=15,
+        tk.Label(search_frame, text="Search:", font=("Helvetica", 14), bg="#e6f7ff").grid(row=0, column=0, padx=15,
                                                                                           pady=10)
-        self.search_entry = tk.Entry(search_frame, width=30, bg="yellow", fg="blue", font=("Helvetica", 12))
+        self.search_entry = tk.Entry(search_frame, font=("Helvetica", 14), width=35, bg="yellow", fg="blue",
+                                     justify="center")
         self.search_entry.grid(row=0, column=1, padx=15, pady=10)
         self.search_entry.bind("<KeyRelease>", filter_table)
 
-        # Configure grid styling
+        # Configure grid styling and font
         style = ttk.Style()
-        style.configure("Treeview", font=("Helvetica", 12), rowheight=30)
-        style.configure("Treeview.Heading", font=("Helvetica", 12, "bold"))
+        style.configure("Treeview", font=("Helvetica", 12), rowheight=30)  # Font size 14 for data rows
+        style.configure("Treeview.Heading", font=("Helvetica", 14, "bold"))  # Font size 14 for column headers
 
-        # Table with scrollbars
-        table_frame = tk.Frame(self.root)
+        # Table Section
+        table_frame = tk.Frame(self.root, bg="#e6f7ff")
         table_frame.pack(pady=10, fill=tk.BOTH, expand=True)
 
+        # Table Columns
         table_columns = ("Account ID", "Hashed Password", "Target Name")
 
         v_scrollbar = ttk.Scrollbar(table_frame, orient=tk.VERTICAL)
@@ -1761,12 +2606,12 @@ class PasswordManagerGUI:
             height=10,
             yscrollcommand=v_scrollbar.set,
             xscrollcommand=h_scrollbar.set,
-            selectmode="extended",  # Allow multiple selection
+            selectmode="extended",
         )
         v_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         h_scrollbar.pack(side=tk.BOTTOM, fill=tk.X)
-
         self.table.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
         v_scrollbar.config(command=self.table.yview)
         h_scrollbar.config(command=self.table.xview)
 
@@ -1795,12 +2640,10 @@ class PasswordManagerGUI:
                 return
 
             try:
-                # Collect data from selected rows
                 rows = ["\t".join(self.table.item(item, "values")) for item in selected_items]
                 self.root.clipboard_clear()
                 self.root.clipboard_append("\n".join(rows))
                 self.root.update()  # Update the clipboard
-                #messagebox.showinfo("Success", "Selected rows copied to clipboard!")
             except Exception as e:
                 logging.error(f"Failed to copy selected rows: {e}")
                 messagebox.showerror("Error", "Failed to copy rows. Check logs for details.")
@@ -1812,7 +2655,7 @@ class PasswordManagerGUI:
             """
             row_id = self.table.identify_row(event.y)
             if row_id:
-                self.table.selection_add(row_id)  # Add the row to the current selection
+                self.table.selection_add(row_id)
 
         # Context menu
         context_menu = tk.Menu(self.root, tearoff=0)
@@ -1828,12 +2671,166 @@ class PasswordManagerGUI:
         footer_frame.pack(fill=tk.X, side=tk.BOTTOM)
 
         self.total_records_label = tk.Label(
-            footer_frame, text="Total Records: 0", font=("Helvetica", 12), bg="#e6f7ff", anchor="center"
+            footer_frame, text="Total Records: 0", font=("Helvetica", 14), bg="#e6f7ff", anchor="center"
         )
         self.total_records_label.pack(pady=6)
 
+
         self.refresh_table()
 
+        # Force refresh the root window
+        self.root.update()
+
+
+    def upload_data(self):
+        """
+        Opens a file dialog to upload data and processes it based on user selection.
+        """
+        file_path = filedialog.askopenfilename(
+            title="Select Data File",
+            filetypes=[("Excel Files", "*.xlsx"), ("CSV Files", "*.csv")]
+        )
+
+        if not file_path:
+            return  # User canceled the dialog
+
+        try:
+            # Read the file into a DataFrame
+            if file_path.endswith(".xlsx"):
+                df = pd.read_excel(file_path)
+            elif file_path.endswith(".csv"):
+                df = pd.read_csv(file_path)
+            else:
+                messagebox.showerror("Error", "Unsupported file format!")
+                return
+        except Exception as e:
+            logging.error(f"Error reading file: {e}")
+            messagebox.showerror("Error", f"Failed to read file: {e}")
+            return
+
+        # Validate columns
+        required_columns = {"Account ID", "Password", "Target Name"}
+        if not required_columns.issubset(df.columns):
+            messagebox.showerror("Error", "The file must contain 'Account ID', 'Password', and 'Target Name' columns.")
+            return
+
+        # Show options to user
+        def process_selection(mode):
+            self.process_uploaded_data(df, mode)
+            selection_window.destroy()
+
+        selection_window = tk.Toplevel(self.root)
+        selection_window.title("Data Upload Mode")
+        selection_window.geometry("400x200")
+        selection_window.configure(bg="#d1e7ff")
+
+        tk.Label(selection_window, text="Choose Upload Mode:", font=("Helvetica", 14), bg="#d1e7ff").pack(pady=20)
+        ttk.Button(selection_window, text="Complete Override", command=lambda: process_selection("override")).pack(
+            pady=10)
+        ttk.Button(selection_window, text="Append New Data", command=lambda: process_selection("append")).pack(pady=10)
+
+        selection_window.transient(self.root)
+        selection_window.grab_set()
+        selection_window.focus_force()
+
+    def process_uploaded_data(self, df, mode):
+        """
+        Processes uploaded data based on the selected mode ('override' or 'append').
+        Includes a preview window for confirmation.
+        """
+        if mode == "override":
+            # Call the preview window to confirm the override
+            self.show_preview_and_confirm(df, mode)
+        elif mode == "append":
+            # Identify new records to append
+            conn = sqlite3.connect(SupplementClass.DB_NAME)
+            cursor = conn.cursor()
+
+            # Get all existing records
+            existing_records = cursor.execute(
+                "SELECT account_id, target_name FROM passwords"
+            ).fetchall()
+
+            # Create a set for quick lookup
+            existing_set = set((row[0], row[1]) for row in existing_records)
+
+            # Filter new records
+            new_records = df[
+                ~df.apply(lambda row: (row["Account ID"], row["Target Name"]) in existing_set, axis=1)
+            ]
+
+            conn.close()
+
+            if not new_records.empty:
+                # Call the preview window to confirm the append
+                self.show_preview_and_confirm(new_records, mode)
+            else:
+                messagebox.showinfo("No New Data", "No new records to append. All data already exists in the database.")
+
+    def show_preview_and_confirm(self, df, mode):
+        """
+        Display a preview of the data and confirm the action.
+        Args:
+            df (pd.DataFrame): The data to preview.
+            mode (str): The mode of upload ('override' or 'append').
+        """
+        preview_window = tk.Toplevel(self.root)
+        preview_window.title("Data Preview")
+        preview_window.geometry("800x600")
+        preview_window.configure(bg="#e6f7ff")
+
+        # Center the preview window on the Password Manager window
+        self.center_window(preview_window, width=800, height=600)
+        preview_window.transient(self.root)  # Make it a child of the main window
+        preview_window.grab_set()  # Prevent interaction with the parent window
+        preview_window.focus_force()  # Ensure the window gets focus
+
+        tk.Label(preview_window, text=f"Preview of Uploaded Data ({mode.capitalize()})",
+                 font=("Helvetica", 14, "bold"), bg="#e6f7ff").pack(pady=10)
+
+        frame = tk.Frame(preview_window, bg="#e6f7ff")
+        frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        canvas = tk.Canvas(frame, bg="#e6f7ff")
+        scrollbar = ttk.Scrollbar(frame, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        inner_frame = tk.Frame(canvas, bg="#e6f7ff")
+        canvas.create_window((0, 0), window=inner_frame, anchor="nw")
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Populate preview data
+        for col_idx, col_name in enumerate(df.columns):
+            tk.Label(inner_frame, text=col_name, font=("Helvetica", 12, "bold"), bg="#4682B4", fg="white",
+                     width=20).grid(row=0, column=col_idx, padx=5, pady=5, sticky="nsew")
+
+        for row_idx, row_data in enumerate(df.values):
+            for col_idx, cell_value in enumerate(row_data):
+                bg_color = "#F0F8FF" if row_idx % 2 == 0 else "#E6E6FA"
+                tk.Label(inner_frame, text=str(cell_value), font=("Helvetica", 12), bg=bg_color, width=20).grid(
+                    row=row_idx + 1, column=col_idx, padx=5, pady=5, sticky="nsew"
+                )
+
+        button_frame = tk.Frame(preview_window, bg="#e6f7ff")
+        button_frame.pack(pady=10)
+
+        def confirm_upload():
+            if mode == "override":
+                self.override_data(df)
+            elif mode == "append":
+                self.append_new_data(df)
+            preview_window.destroy()
+
+        def cancel_upload():
+            messagebox.showinfo("Cancelled", "Upload has been cancelled. No changes were made.")
+            preview_window.destroy()
+
+        ttk.Button(button_frame, text="Upload", command=confirm_upload).pack(side=tk.LEFT, padx=10)
+        ttk.Button(button_frame, text="Cancel", command=cancel_upload).pack(side=tk.LEFT, padx=10)
+
+        inner_frame.update_idletasks()
+        canvas.configure(scrollregion=canvas.bbox("all"))
 
     def setup_menus(self):
         """
@@ -1843,26 +2840,31 @@ class PasswordManagerGUI:
 
         # Tools Menu
         tools_menu = Menu(menu_bar, tearoff=0)
-        tools_menu.add_command(label="1. Reset Admin Password", command=SupplementClass.send_recovery_email)
+        tools_menu.add_command(label="1__Reset Admin Password", command=SupplementClass.send_recovery_email)
         tools_menu.add_separator()
-        tools_menu.add_command(label="2. Exit", command=self.root.destroy)  # Exits the program
+        tools_menu.add_command(label="2__Exit", command=self.root.destroy)  # Exits the program
         menu_bar.add_cascade(label="Tools", menu=tools_menu)
 
         # Maintenance Menu
         maintenance_menu = Menu(menu_bar, tearoff=0)
-        maintenance_menu.add_command(label="1. Reset Admin", command=self.reset_admin)
-        maintenance_menu.add_command(label="2. Reset Email Sender", command=self.reset_email_sender)
-        maintenance_menu.add_command(label="3. Export Data to Excel", command=self.export_to_excel)
-        maintenance_menu.add_command(label="4. Upload Data", command=self.upload_data)
+        maintenance_menu.add_command(label="1__Export data to Excel", command=self.export_to_excel)
+        maintenance_menu.add_command(label="2__Upload data from Excel", command=self.upload_data)
+        maintenance_menu.add_command(label="3__Reset Admin", command=self.reset_admin)
+        maintenance_menu.add_command(label="4__Reset Email Sender", command=self.reset_email_sender)
         menu_bar.add_cascade(label="Maintenance", menu=maintenance_menu)
 
 
         # About Menu
         about_menu = Menu(menu_bar, tearoff=0)
-        about_menu.add_command(label="1. About Us", command=self.show_about_window)
+        about_menu.add_command(label="1__About Us", command=self.show_about_window)
         menu_bar.add_cascade(label="About", menu=about_menu)
 
         self.root.config(menu=menu_bar)
+
+        # Settings menu
+        settings_menu = Menu(menu_bar, tearoff=0)
+        settings_menu.add_command(label="1__Inactivity Timer", command=self.open_settings_window)
+        menu_bar.add_cascade(label="Settings", menu=settings_menu)
 
     def reset_admin(self):
         """
@@ -1935,7 +2937,6 @@ class PasswordManagerGUI:
 
             try:
                 # Save new sender credentials
-                #conn = sqlite3.connect(DB_NAME)
                 conn = sqlite3.connect(SupplementClass.DB_NAME)
                 cursor = conn.cursor()
                 cursor.execute("DELETE FROM sender_credentials")  # Clear existing sender credentials
@@ -1971,66 +2972,140 @@ class PasswordManagerGUI:
 
     def export_to_excel(self):
         """
-        Export data to a password-protected Excel file.
-        Hashed passwords are converted to plain text, and the file is protected with the admin password.
+        Export data to an encrypted .aes file and allow decryption back to Excel
+        after verifying the admin password. Deletes the .aes file after successful export.
         """
         try:
-            # Retrieve admin password and decrypt it
-            admin_password = SupplementClass.get_admin_password("admin")
-            if not admin_password:
-                messagebox.showerror("Error", "Failed to retrieve admin password!")
-                return
+            # Set the Downloads folder as the save location
+            downloads_folder = os.path.expanduser("~/Downloads")
+            if not os.path.exists(downloads_folder):
+                os.makedirs(downloads_folder)
 
-            # Fetch data from the database
-            #conn = sqlite3.connect(DB_NAME)
+            timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            aes_filename = os.path.join(downloads_folder, f"Exported_{timestamp}.aes")
+            excel_filename = os.path.join(downloads_folder, f"Exported_{timestamp}.xlsx")
+
+            # Fetch data from the database and rename columns to match the expected format
             conn = sqlite3.connect(SupplementClass.DB_NAME)
-            cursor = conn.cursor()
-            cursor.execute("SELECT account_id, original_password, target_name FROM passwords")
-            rows = cursor.fetchall()
+            query = "SELECT account_id, original_password, target_name FROM passwords"
+            df = pd.read_sql_query(query, conn)
             conn.close()
 
-            if not rows:
-                messagebox.showerror("Error", "No data available to export!")
-                return
+            # Rename columns to match expected format
+            column_mapping = {
+                "account_id": "Account ID",
+                "original_password": "Password",
+                "target_name": "Target Name"
+            }
+            df.rename(columns=column_mapping, inplace=True)
 
-            # Create a DataFrame for Excel export
-            df = pd.DataFrame(rows, columns=["Account ID", "Password", "Target Name"])
+            # Save data to an encrypted .aes file
+            temp_excel_path = os.path.join(downloads_folder, f"temp_{timestamp}.xlsx")
+            df.to_excel(temp_excel_path, index=False)
 
-            # Generate a default file name
-            timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-            default_file_name = f"password_manager_export_{timestamp}.xlsx"
+            admin_password = SupplementClass.get_admin_password("admin")
+            pyAesCrypt.encryptFile(temp_excel_path, aes_filename, admin_password, BUFFER_SIZE)
+            os.remove(temp_excel_path)
 
-            # Ask user for save location
-            file_path = tk.filedialog.asksaveasfilename(
-                initialfile=default_file_name,
-                defaultextension=".xlsx",
-                filetypes=[("Excel Files", "*.xlsx")],
-                title="Save Excel File"
-            )
-            if not file_path:
-                return  # User canceled the save operation
+            # Create a fancy decryption window
+            decrypt_window = Toplevel(self.root)
+            decrypt_window.title("Decrypt and Export")
+            decrypt_window.geometry("500x300")
+            decrypt_window.configure(bg="#e6f7ff")  # Match the Password Manager's color theme
+            decrypt_window.resizable(False, False)
 
-            # Save the data to an Excel file
-            with pd.ExcelWriter(file_path, engine="xlsxwriter") as writer:
-                df.to_excel(writer, index=False, sheet_name="Passwords")
-                workbook = writer.book
-                worksheet = writer.sheets["Passwords"]
-                worksheet.protect(password=admin_password)
-
-            # Notify the user
-            hint = f"{admin_password[:2]}****{admin_password[-2:]}"  # Provide a hint for the password
-            messagebox.showinfo(
-                "Export Successful",
-                f"Data exported successfully and password protected!\nAdmin password hint: {hint}"
+            # Center the window
+            decrypt_window.geometry(
+                f"{500}x{300}+{self.root.winfo_x() + (self.root.winfo_width() // 2) - 250}+{self.root.winfo_y() + (self.root.winfo_height() // 2) - 150}"
             )
 
-        except ImportError:
-            messagebox.showerror(
-                "Error",
-                "Required modules 'pandas' or 'xlsxwriter' are not installed. Please install them to use this feature."
+            # Title Label
+            Label(
+                decrypt_window,
+                text="Decrypt and Export",
+                font=("Helvetica", 16, "bold"),
+                bg="#4682B4",
+                fg="white",
+                pady=10
+            ).pack(fill="x")
+
+            # Instruction Label
+            Label(
+                decrypt_window,
+                text="Enter Admin Password to Decrypt and Export:",
+                font=("Helvetica", 12),
+                bg="#e6f7ff",
+                fg="#333333"
+            ).pack(pady=20)
+
+            # Password Entry
+            password_entry = ttk.Entry(decrypt_window, width=30, show="*")
+            password_entry.pack(pady=10)
+
+            # Button Frame
+            button_frame = ttk.Frame(decrypt_window, style="TFrame")
+            button_frame.pack(pady=20)
+
+            def process_decryption():
+                entered_password = password_entry.get().strip()
+                if entered_password != admin_password:
+                    messagebox.showerror("Error", "Incorrect Admin Password!", parent=decrypt_window)
+                    return
+
+                try:
+                    # Decrypt the .aes file to an Excel file
+                    pyAesCrypt.decryptFile(aes_filename, excel_filename, admin_password, BUFFER_SIZE)
+
+                    # Immediately delete the .aes file after decryption
+                    os.remove(aes_filename)
+
+                    # Notify the user of success
+                    messagebox.showinfo("Success", f"Data successfully exported to {excel_filename}!", parent=self.root)
+                    decrypt_window.destroy()
+                except Exception as e:
+                    logging.error(f"Failed to decrypt the file: {e}")
+                    messagebox.showerror("Error", f"Failed to decrypt the file: {e}", parent=decrypt_window)
+
+            def cancel_decryption():
+                """Close the decryption window without processing."""
+                decrypt_window.destroy()
+
+            # OK Button
+            ok_button = Button(
+                button_frame,
+                text="OK",
+                command=process_decryption,
+                font=("Helvetica", 12, "bold"),
+                bg="#4CAF50",
+                fg="white",
+                activebackground="#45a049",
+                activeforeground="white",
+                relief="raised",
+                width=10
             )
+            ok_button.grid(row=0, column=0, padx=10)
+            ok_button.focus_set()  # Set focus to the OK button
+
+            # Cancel Button
+            cancel_button = Button(
+                button_frame,
+                text="Cancel",
+                command=cancel_decryption,
+                font=("Helvetica", 12, "bold"),
+                bg="#F44336",
+                fg="white",
+                activebackground="#e53935",
+                activeforeground="white",
+                relief="raised",
+                width=10
+            )
+            cancel_button.grid(row=0, column=1, padx=10)
+
+            # Bind the Enter key to the OK button
+            decrypt_window.bind("<Return>", lambda event: process_decryption())
+
         except Exception as e:
-            logging.error(f"Failed to export data to Excel: {e}")
+            logging.error(f"Failed during export: {e}")
             messagebox.showerror("Error", f"Failed to export data: {e}")
 
     def center_window(self, window, width=None, height=None):
@@ -2175,112 +3250,257 @@ class PasswordManagerGUI:
         about_window.grab_set()
         about_window.focus_force()
 
+    def open_settings_window(self):
+        """
+        Open a settings window to adjust the inactivity timeout.
+        """
+        # Create the settings window
+        settings_window = tk.Toplevel(self.root)
+        settings_window.title("Settings")
+        settings_window.geometry("400x200")
+        settings_window.configure(bg="#e6f7ff")
+        settings_window.transient(self.root)
+        settings_window.grab_set()
 
-# def show_about_window(self):
-#     """Show the About window with application details and a scroll bar."""
-#     about_window = tk.Toplevel(self.root)
-#     about_window.title("About Password Manager")
-#     about_window.geometry("400x500")
-#     about_window.configure(bg="#e6f7ff")
-#
-#     # Center the window relative to the Password Manager window
-#     self.center_window(about_window, width=600, height=300)
-#
-#     # Main frame for scrolling
-#     main_frame = tk.Frame(about_window, bg="#e6f7ff")
-#     main_frame.pack(fill=tk.BOTH, expand=True)
-#
-#     # Canvas for scrolling
-#     canvas = tk.Canvas(main_frame, bg="#e6f7ff", highlightthickness=0)
-#     canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-#
-#     # Scrollbar for the canvas
-#     scrollbar = ttk.Scrollbar(main_frame, orient="vertical", command=canvas.yview)
-#     scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-#
-#     # Configure the canvas with the scrollbar
-#     canvas.configure(yscrollcommand=scrollbar.set)
-#     canvas.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-#
-#     # Bind mouse scrolling to the canvas
-#     def on_mouse_scroll(event):
-#         """Scroll the canvas when the mouse wheel is used."""
-#         canvas.yview_scroll(-1 * int(event.delta / 120), "units")
-#
-#     canvas.bind_all("<MouseWheel>", on_mouse_scroll)
-#
-#     # Inner frame for the content
-#     inner_frame = tk.Frame(canvas, bg="#e6f7ff")
-#     canvas.create_window((0, 0), window=inner_frame, anchor="nw")
-#
-#     # Add content to the inner frame
-#     tk.Label(
-#         inner_frame,
-#         text="Password Manager v2.0",
-#         font=("Helvetica", 16, "bold"),
-#         bg="#e6f7ff"
-#     ).pack(pady=10)
-#
-#     # Numbered points
-#     numbered_points = [
-#         ("Enhanced Security:", "All passwords are encrypted using AES-256."),
-#         ("User-Friendly Interface:", "Intuitive design for easy navigation."),
-#         ("Search Functionality:", "Quickly find stored passwords."),
-#         ("Data Export:", "Export passwords to a password-protected Excel file."),
-#         ("Conflict Resolution:", "Easily resolve conflicts during data imports."),
-#         ("Dynamic Data Grid:", "Colorful, scrollable grid with alternating row colors."),
-#         ("CRUD Operations:", "Create, Read, Update, and Delete password records."),
-#         ("Real-Time Sync:", "Refresh the grid instantly after any update."),
-#         ("Duplicate Prevention:", "Detects and prevents duplicate records."),
-#         ("Password Retrieval:", "Quickly retrieve and display original passwords."),
-#         ("Admin Management:", "Supports admin credential management with encryption."),
-#         ("Log Management:", "Keeps track of logs and removes outdated log files."),
-#         ("Multi-Format Import:", "Import data from various file formats like CSV and Excel."),
-#         ("Summary Reports:", "Displays a clear summary of updates and denied records."),
-#         ("Cross-Platform Compatibility:", "Works on Windows, macOS, and Linux."),
-#         ("Customizable Appearance:", "Easily adjust themes and colors for the interface."),
-#         ("Error Handling:", "Robust error handling and user-friendly error messages."),
-#         ("Search with Filters:", "Advanced search with filters for Account ID and Target Name."),
-#         ("Password Strength Validation:", "Ensures strong passwords during creation."),
-#         ("One-Click Backup:", "Backup your database with a single click."),
-#     ]
-#
-#     # Fonts for styling
-#     bold_font = ("Arial", 12, "bold")  # Bold and larger font for titles
-#     normal_font = ("Arial", 10)  # Normal font for descriptions
-#
-#     # Add numbered points to the inner_frame
-#     for i, (title, description) in enumerate(numbered_points, start=1):
-#         # Create a text widget for each point
-#         text_widget = tk.Text(inner_frame, wrap="word", bg="#e6f7ff", borderwidth=0, highlightthickness=0, height=2)
-#         text_widget.pack(fill="x", padx=20, pady=5)
-#
-#         # Configure font tags
-#         text_widget.tag_configure("bold", font=bold_font)  # Configure bold font
-#         text_widget.tag_configure("normal", font=normal_font)  # Configure normal font
-#
-#         # Insert the number and bold title
-#         text_widget.insert("end", f"{i}. ", "bold")  # Number in bold
-#         text_widget.insert("end", title, "bold")  # Title in bold font
-#
-#         # Insert the description in normal font
-#         text_widget.insert("end", f" {description}", "normal")
-#
-#         # Prevent user edits while allowing selection
-#         def disable_edit(event):
-#             return "break"  # Prevent editing actions
-#
-#         text_widget.bind("<Key>", disable_edit)  # Block key presses
-#         text_widget.bind("<BackSpace>", disable_edit)  # Block backspace
-#         text_widget.bind("<Delete>", disable_edit)  # Block delete
-#
-#     # Close button
-#     ttk.Button(inner_frame, text="Close", command=about_window.destroy).pack(pady=20, anchor="center")
-#
-#     # Make the window modal
-#     about_window.transient(self.root)
-#     about_window.grab_set()
-#     about_window.focus_force()
+        # Center the settings window relative to the Password Manager window
+        self.center_window(settings_window, 400, 200)
+
+        # Label for inactivity timeout
+        tk.Label(
+            settings_window,
+            text="Set Inactivity Timeout (in minutes):",
+            font=("Helvetica", 12),
+            bg="#e6f7ff"
+        ).grid(row=0, column=0, padx=20, pady=20, sticky="w")
+
+        # Fetch current timeout value
+        current_timeout = self.inactivity_timeout // 60  # Convert seconds to minutes
+        timeout_var = tk.StringVar(value=str(current_timeout))
+
+        # Entry for timeout
+        timeout_entry = ttk.Entry(settings_window, textvariable=timeout_var, width=10)
+        timeout_entry.grid(row=0, column=1, padx=20, pady=20, sticky="w")
+
+        # Button frame for Save and Cancel
+        button_frame = tk.Frame(settings_window, bg="#e6f7ff")
+        button_frame.grid(row=1, column=0, columnspan=2, pady=20)
+
+        # Save button
+        def save_timeout():
+            try:
+                # Update the inactivity timeout
+                timeout = int(timeout_var.get())
+                self.inactivity_timeout = timeout * 60  # Convert minutes to seconds
+
+                # Provide feedback and close the window
+                messagebox.showinfo("Settings Updated", f"Inactivity timeout set to {timeout} minutes.",
+                                    parent=settings_window)
+                settings_window.destroy()
+            except ValueError:
+                messagebox.showerror("Invalid Input", "Please enter a valid number.", parent=settings_window)
+
+        save_button = tk.Button(
+            button_frame,
+            text="Save",
+            command=save_timeout,
+            bg="#4CAF50",
+            fg="white",
+            font=("Helvetica", 12, "bold"),
+            relief=tk.RAISED
+        )
+        save_button.pack(side="left", padx=10)
+
+        # Cancel button
+        cancel_button = tk.Button(
+            button_frame,
+            text="Cancel",
+            command=settings_window.destroy,
+            bg="#F44336",
+            fg="white",
+            font=("Helvetica", 12, "bold"),
+            relief=tk.RAISED
+        )
+        cancel_button.pack(side="left", padx=10)
+
+    def save_inactivity_timeout(self, timeout):
+        """
+        Save the inactivity timeout value to the database.
+        """
+        conn = sqlite3.connect(SupplementClass.DB_NAME)
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            UPDATE app_settings SET value = ? WHERE key = 'inactivity_timeout'
+        """, (str(timeout),))  # Convert to string for storage
+        conn.commit()
+        conn.close()
+
+    def reset_inactivity_timer(self, event=None):
+        """Reset the inactivity timer."""
+        self.last_activity_time = time.time()
+
+    def initialize_settings_table(self):
+        """
+        Ensure the settings table exists in the database.
+        """
+        conn = sqlite3.connect(SupplementClass.DB_NAME)
+        cursor = conn.cursor()
+
+        # Create the settings table if it doesn't exist
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS app_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        """)
+
+        # Insert default inactivity timeout if not present
+        cursor.execute("""
+            INSERT OR IGNORE INTO app_settings (key, value)
+            VALUES ('inactivity_timeout', '600000')  -- Default 10 minutes in milliseconds
+        """)
+        conn.commit()
+        conn.close()
+
+    def inactivity_time(self, last_activity_time, timeout_duration):
+        """
+        Calculate the time elapsed since the last activity and determine if the timeout has occurred.
+
+        Args:
+            last_activity_time (float): The timestamp of the last user activity.
+            timeout_duration (int): The inactivity timeout duration in seconds.
+
+        Returns:
+            bool: True if the timeout has occurred, False otherwise.
+            int: The remaining time (in seconds) before the timeout.
+        """
+        current_time = time.time()
+        elapsed_time = current_time - last_activity_time
+        remaining_time = timeout_duration - elapsed_time
+
+        if elapsed_time >= timeout_duration:
+            return True, 0  # Timeout occurred
+        else:
+            return False, int(remaining_time)
+
+    def log_off(self):
+        """Handle logging off the user."""
+        messagebox.showinfo("Session Timeout", "You have been logged off due to inactivity.")
+        self.authenticate_admin()  # Redirect to the admin authentication window
+
+    def setup_inactivity_tracker(self):
+        """
+        Sets up a global inactivity tracker that redirects to admin authentication after inactivity.
+        """
+        self.warning_popup_active = False
+
+        # Fetch timeout in minutes and convert to seconds
+        self.inactivity_time = SupplementClass.fetch_inactivity_timeout() * 60
+        self.warning_time = 60  # 1-minute warning time in seconds
+        self.last_activity = time.time()
+
+        def reset_timer(event=None):
+            """Reset the inactivity timer on user interaction."""
+            self.last_activity = time.time()
+            if self.warning_popup_active:
+                self.warning_popup_active = False
+            logging.info("Inactivity timer reset.")
+
+        def show_warning_popup():
+            """Show a warning popup 1 minute before session expiration."""
+            if self.warning_popup_active:
+                return  # Avoid multiple popups
+
+            self.warning_popup_active = True
+            warning_popup = tk.Toplevel(self.root)
+            warning_popup.title("Inactivity Warning")
+            warning_popup.geometry("400x200")
+            self.center_window(warning_popup)
+            warning_popup.configure(bg="#e6f7ff")
+            warning_popup.transient(self.root)
+            warning_popup.grab_set()
+
+            tk.Label(
+                warning_popup,
+                text="You will be logged out in 1 minute due to inactivity.",
+                font=("Helvetica", 12),
+                bg="#e6f7ff"
+            ).pack(pady=20)
+
+            def continue_logged_in():
+                """Reset the timer and close the popup."""
+                self.last_activity = time.time()
+                self.warning_popup_active = False
+                warning_popup.destroy()
+
+            def allow_logout():
+                """Trigger session expiration."""
+                self.warning_popup_active = False
+                warning_popup.destroy()
+                redirect_to_admin_authentication()
+
+            tk.Button(
+                warning_popup,
+                text="Continue Logged In",
+                command=continue_logged_in,
+                bg="#4CAF50",
+                fg="white",
+                font=("Helvetica", 12, "bold")
+            ).pack(pady=10)
+
+            tk.Button(
+                warning_popup,
+                text="OK (Expire)",
+                command=allow_logout,
+                bg="#F44336",
+                fg="white",
+                font=("Helvetica", 12, "bold")
+            ).pack(pady=5)
+
+        def redirect_to_admin_authentication():
+            """Redirect to Admin Authentication upon session expiration."""
+            logging.info("Session expired. Redirecting to Admin Authentication...")
+            messagebox.showinfo("Session Expired", "Your session has expired. Please log in again.")
+            self.authenticate_admin()  # Bring the admin login window
+
+        def check_inactivity():
+            """
+            Checks for user inactivity and handles warning popup or session expiration.
+            """
+            elapsed_time = time.time() - self.last_activity
+            logging.info(f"Elapsed time since last activity: {elapsed_time} seconds")
+
+            current_time = time.time()
+            if current_time - self.last_activity_time > self.inactivity_time:
+                self.log_off()
+            else:
+                self.root.after(1000, self.check_inactivity)  # Check every second
+
+
+            if self.inactivity_checker_active:
+                return  # Prevent multiple concurrent timers
+            self.inactivity_checker_active = True
+
+            # Show warning popup 1 minute before logout
+            if elapsed_time >= (self.inactivity_time - self.warning_time) and not self.warning_popup_active:
+                show_warning_popup()
+
+            # Redirect to authentication if inactivity timeout is reached
+            if elapsed_time >= self.inactivity_time:
+                if self.warning_popup_active:
+                    self.warning_popup_active = False
+                redirect_to_admin_authentication()
+            else:
+                self.root.after(1000, check_inactivity)  # Check every second
+            self.inactivity_checker_active = False
+
+        # Bind user events to reset the timer
+        self.root.bind_all("<Any-KeyPress>", reset_timer)
+        self.root.bind_all("<Any-Button>", reset_timer)
+        self.root.bind_all("<Motion>", reset_timer)
+
+        logging.info("Inactivity tracker started.")
+        check_inactivity()
 
 if __name__ == "__main__":
     # Initialize logging and database through SupplementClass
